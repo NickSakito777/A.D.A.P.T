@@ -1,5 +1,7 @@
 package com.example.adaptapp.controller
 
+import android.os.Handler
+import android.os.Looper
 import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.model.ArmPosition
@@ -7,6 +9,8 @@ import org.json.JSONObject
 
 // 机械臂控制器 — 封装所有 T-code 命令
 class ArmController(var connection: ConnectionManager) {
+
+    private val handler = Handler(Looper.getMainLooper())
 
     // 移动到指定位置（T:102 最短路径 + T:700 Roll + T:703 Tilt）
     fun moveTo(position: ArmPosition, speed: Int = 0, acc: Int = 10) {
@@ -29,9 +33,17 @@ class ArmController(var connection: ConnectionManager) {
         send("""{"T":120,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
     }
 
-    // 急停
+    // 急停：停止运动 → 锁扭矩 → 4s 后折叠 → 4s 后松扭矩
     fun emergencyStop() {
+        handler.removeCallbacksAndMessages(ESTOP_TOKEN)
         send("""{"T":0}""")
+        setTorque(true)
+        handler.postDelayed({
+            foldAndRelease()
+            handler.postDelayed({
+                setTorque(false)
+            }, ESTOP_TOKEN, 4000)
+        }, ESTOP_TOKEN, 4000)
     }
 
     // 读取当前关节反馈（T:105 → ESP32 返回 T:1051）
@@ -70,6 +82,7 @@ class ArmController(var connection: ConnectionManager) {
 
     // 解析 T:1051 反馈 JSON 为 ArmPosition
     companion object {
+        private val ESTOP_TOKEN = Object()
         fun parseFeedback(json: String): ArmPosition? {
             return try {
                 val obj = JSONObject(json)

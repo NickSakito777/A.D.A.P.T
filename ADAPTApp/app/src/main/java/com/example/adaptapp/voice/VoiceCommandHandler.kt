@@ -298,7 +298,6 @@ class VoiceCommandHandler(
         stopSpeechRecognizer()
         feedback.stop()
         armController.emergencyStop()
-        armController.setTorque(true)
         pendingAction = null
         pendingCandidates = null
         srFailureCount = 0
