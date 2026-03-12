@@ -47,9 +47,10 @@ class VoiceCommandHandler(
 
     companion object {
         private const val TAG = "VoiceCommandHandler"
-        private const val LISTEN_TIMEOUT_MS = 8000L
+        private const val LISTEN_TIMEOUT_MS = 12000L
         private const val ARRIVAL_DELAY_MS = 4000L
         private const val MAX_SR_FAILURES = 3
+        private const val SR_FAILURE_DELAY_MS = 3000L  // SR 失败后延迟恢复唤醒词，防误触发循环
     }
 
     // UI 观察的状态流
@@ -434,16 +435,15 @@ class VoiceCommandHandler(
         }
     }
 
-    // SR 失败处理
+    // SR 失败处理 — 延迟恢复唤醒词，避免立即重启导致 stop 误触发循环
     private fun onSrFailure() {
         srFailureCount++
         if (srFailureCount >= MAX_SR_FAILURES) {
-            returnToIdle()
             feedback.speak("Voice recognition not working, please try again later")
             srFailureCount = 0
-        } else {
-            returnToIdle()
         }
+        setState(VoiceStatus.IDLE, "Say 'Hey Arm'")
+        handler.postDelayed({ onWakeWordStart?.invoke() }, SR_FAILURE_DELAY_MS)
     }
 
     private fun stopSpeechRecognizer() {

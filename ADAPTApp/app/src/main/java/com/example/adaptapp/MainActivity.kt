@@ -114,10 +114,11 @@ class MainActivity : ComponentActivity() {
                     activeMode = newMode
                 }
 
-                // 语音系统：Recall Mode 自动启动，其他页面自动暂停
+                // 语音系统：Recall Mode + voiceEnabled 时启动，否则暂停
                 val voiceState by voiceCommandHandler.voiceState.collectAsState()
-                LaunchedEffect(currentScreen) {
-                    if (currentScreen == Screen.RECALL && voiceAvailable) {
+                var voiceEnabled by remember { mutableStateOf(true) }
+                LaunchedEffect(currentScreen, voiceEnabled) {
+                    if (currentScreen == Screen.RECALL && voiceAvailable && voiceEnabled) {
                         voiceCommandHandler.resume()
                     } else {
                         voiceCommandHandler.pause()
@@ -133,6 +134,8 @@ class MainActivity : ComponentActivity() {
                         btManager = btManager,
                         onSwitchMode = onSwitchMode,
                         voiceState = voiceState,
+                        voiceEnabled = voiceEnabled,
+                        onVoiceToggle = { voiceEnabled = it },
                         onEnterSetup = { currentScreen = Screen.SETUP },
                         onOpenDebug = { currentScreen = Screen.DEBUG }
                     )

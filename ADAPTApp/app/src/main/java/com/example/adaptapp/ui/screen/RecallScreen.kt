@@ -37,6 +37,8 @@ fun RecallScreen(
     btManager: BluetoothSppManager? = null,
     onSwitchMode: ((ConnectionMode) -> Unit)? = null,
     voiceState: VoiceState? = null,
+    voiceEnabled: Boolean = true,
+    onVoiceToggle: ((Boolean) -> Unit)? = null,
     onEnterSetup: () -> Unit,
     onOpenDebug: () -> Unit
 ) {
@@ -74,10 +76,32 @@ fun RecallScreen(
                 onSwitchMode = onSwitchMode
             )
 
-            // === 语音状态指示 ===
-            voiceState?.let { vs ->
+            // === 语音控制开关 + 状态指示 ===
+            if (onVoiceToggle != null) {
                 Spacer(modifier = Modifier.height(4.dp))
-                VoiceIndicator(vs)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                ) {
+                    Text("Voice", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Switch(
+                        checked = voiceEnabled,
+                        onCheckedChange = onVoiceToggle,
+                        modifier = Modifier.height(24.dp)
+                    )
+                    voiceState?.let { vs ->
+                        if (voiceEnabled) {
+                            Spacer(modifier = Modifier.width(12.dp))
+                            VoiceIndicator(vs)
+                        }
+                    }
+                }
+            } else {
+                voiceState?.let { vs ->
+                    Spacer(modifier = Modifier.height(4.dp))
+                    VoiceIndicator(vs)
+                }
             }
 
             Spacer(modifier = Modifier.height(12.dp))

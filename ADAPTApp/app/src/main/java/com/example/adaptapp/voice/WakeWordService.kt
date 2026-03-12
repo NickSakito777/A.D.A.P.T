@@ -45,7 +45,8 @@ class WakeWordService(private val context: Context) {
         private const val EMBED_DIM = 96
         private const val EMBED_WINDOW = 16     // 16 embeddings for detection
 
-        private const val THRESHOLD = 0.5f
+        private const val THRESHOLD_HEY_ARM = 0.5f
+        private const val THRESHOLD_STOP = 0.85f
         private const val COOLDOWN_MS = 2000L   // 检测后冷却 2s 防重复
     }
 
@@ -222,7 +223,8 @@ class WakeWordService(private val context: Context) {
 
         for ((keyword, session) in wwSessions) {
             val score = runDetection(ortEnv, session) ?: continue
-            if (score > THRESHOLD) {
+            val threshold = if (keyword == "stop") THRESHOLD_STOP else THRESHOLD_HEY_ARM
+            if (score > threshold) {
                 lastDetectionTime = now
                 Log.i(TAG, "Detected '$keyword' score=${"%.3f".format(score)}")
                 onWakeWord?.invoke(keyword)
