@@ -1510,26 +1510,75 @@ void constantHandle() {
 //   }
 // }
 
-// 第6个舵机控制函数
-// 参考：ST3215 Wiki - WritePos示例
-void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
-  // 位置计算：ST3215分辨率 = 360°/4096 = 0.088°/步
-  s16 targetPos = (s16)((angleDegrees / 360.0) * ARM_SERVO_POS_RANGE);
-  targetPos = constrain(targetPos, 0, ARM_SERVO_POS_RANGE - 1);
+// 反馈函数（必须在 endEffectorRotate 之前定义）
+int endEffectorGetPosition() {
+  if (getFeedback(END_EFFECTOR_SERVO_ID, true)) {
+    return servoFeedback[END_EFFECTOR_SERVO_ID - 11].pos;
+  }
+  return -1;
+}
 
-  // 使用WritePosEx单独控制（参考ST3215 Wiki）
-  st.WritePosEx(END_EFFECTOR_SERVO_ID, targetPos, speed, acc);
+double endEffectorPosToDegrees(int pos) {
+  return (pos * 360.0) / ARM_SERVO_POS_RANGE;
+}
+
+// 第6个舵机控制函数 — Wheel Mode P-controller 最短路径
+void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
+  // 归一化 0~360 / Normalize to 0~360
+  while (angleDegrees < 0) angleDegrees += 360.0;
+  while (angleDegrees >= 360) angleDegrees -= 360.0;
+
+  s16 targetPos = (s16)((angleDegrees / 360.0) * ARM_SERVO_POS_RANGE);
+  int curPos = endEffectorGetPosition();
+  if (curPos < 0) {
+    if (InfoPrint == 1) Serial.println("EndEffector: cannot read position");
+    return;
+  }
+
+  // Wheel Mode P-controller 最短路径旋转
+  // ST3215 position mode 无法保证最短路径，会绕远路
+  st.WheelMode(END_EFFECTOR_SERVO_ID);
+  delay(20);
+
+  if (InfoPrint == 1) {
+    Serial.print("EndEffector: P-ctrl from pos ");
+    Serial.print(curPos);
+    Serial.print(" to pos ");
+    Serial.println(targetPos);
+  }
+
+  unsigned long startTime = millis();
+  unsigned long timeout = 5000;
+
+  while (millis() - startTime < timeout) {
+    int nowPos = endEffectorGetPosition();
+    if (nowPos < 0) { delay(20); continue; }
+
+    s16 error = targetPos - (s16)nowPos;
+    // 最短路径：超过半圈就反向
+    if (error > 2048) error -= 4096;
+    if (error < -2048) error += 4096;
+
+    if (abs(error) < 15) break; // ~1.3°
+
+    s16 spd = error / 2;
+    if (spd > 500) spd = 500;
+    if (spd < -500) spd = -500;
+    if (spd > 0 && spd < 80) spd = 80;
+    if (spd < 0 && spd > -80) spd = -80;
+
+    st.WriteSpe(END_EFFECTOR_SERVO_ID, spd, 10);
+    delay(20);
+  }
+
+  // 停止并保持（wheel mode speed=0 有扭矩）
+  st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
 
   if (InfoPrint == 1) {
     Serial.print("EndEffector: ");
     Serial.print(angleDegrees);
     Serial.print("° → pos:");
     Serial.println(targetPos);
-  }
-
-  if (lockAfter) {
-    delay(2000); // 等待到位
-    servoTorqueCtrl(END_EFFECTOR_SERVO_ID, 1);
   }
 }
 
@@ -1541,17 +1590,6 @@ void phoneLandscapeInverted() { endEffectorRotate(270, 1500, 50, true); }
 void phoneUnlock() { servoTorqueCtrl(END_EFFECTOR_SERVO_ID, 0); }
 void phoneLock() { servoTorqueCtrl(END_EFFECTOR_SERVO_ID, 1); }
 
-// 反馈函数
-int endEffectorGetPosition() {
-  if (getFeedback(END_EFFECTOR_SERVO_ID, true)) {
-    return servoFeedback[END_EFFECTOR_SERVO_ID - 11].pos;
-  }
-  return -1;
-}
-
-double endEffectorPosToDegrees(int pos) {
-  return (pos * 360.0) / ARM_SERVO_POS_RANGE;
-}
 
 int phoneTiltGetPosition() {
   if (getFeedback(PHONE_TILT_SERVO_ID, true)) {
