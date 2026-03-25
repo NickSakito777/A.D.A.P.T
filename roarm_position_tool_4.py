@@ -12,11 +12,35 @@ import json
 import time
 import os
 import math
+import random
+import csv
+import datetime
 
 # 配置 / Configuration
 BAUD_RATE = 115200
-POSITIONS_FILE = "saved_positions.json"
 TIMEOUT = 2
+
+# 文件路径（相对于脚本所在目录，不受运行目录影响）
+_DIR = os.path.dirname(os.path.abspath(__file__))
+POSITIONS_FILE     = os.path.join(_DIR, "Test_PositionSet.json")
+TEST_POSITIONS_FILE = os.path.join(_DIR, "test_positions.json")
+SAFE_STARTS_FILE   = os.path.join(_DIR, "safe_start_positions.json")
+MOVE_SETTLE_TIME = 20       # 起始位置到位等待 (s)（备用，已被 wait_tilt_roll_stable 替代）
+TARGET_SETTLE_TIME = 20     # 目标位置 settling 等待 (s)（备用，已被 wait_tilt_roll_stable 替代）
+MOCAP_WINDOW = 5            # 静态录制窗口 (s)
+BLOCK_A_REPEATS = 15
+BLOCK_B_REPEATS = 10
+RANDOM_SEED = 42
+
+# Tilt/Roll 到位检测参数
+TILT_ROLL_STABLE_THRESH = 0.5   # 度，连续读数差 < 此值视为不动
+TILT_ROLL_STABLE_COUNT = 3      # 连续稳定次数
+TILT_ROLL_TIMEOUT = 15          # 秒，超时后强制继续
+TILT_ROLL_INITIAL_WAIT = 3      # 秒，wait_tilt_roll_stable 开头的短等待
+ARM_MOVE_WAIT = 5               # 秒，T:102 后等臂关节物理到位再发 roll/tilt
+ESP32_POLL_INTERVAL = 0.5       # 秒，轮询 ESP32 是否解除阻塞的间隔
+ESP32_BLOCK_TIMEOUT = 10        # 秒，等 ESP32 解除阻塞的超时
+TILT_ROLL_POST_STABLE = 8       # 秒，确认稳定后额外缓冲
 
 # ID15 手部安全范围 / Hand (ID15) safe range: 55° ~ 223°
 # 物理极限 ~50° 和 ~228°，各留5°余量
@@ -328,6 +352,374 @@ class RoArmController:
         self.send_command({"T": 100})
         print("✅ 命令已发送 / Command sent")
 
+    # --- Precision Test Methods ---
+
+    def read_position_raw(self):
+        """静默读取当前位置，不打印，返回 dict 或 None"""
+        if not self.ser:
+            return None
+        self.ser.reset_input_buffer()
+        self.ser.write((json.dumps({"T": 105}) + "\n").encode())
+        time.sleep(0.5)
+        response = ""
+        while self.ser.in_waiting:
+            response += self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
+            time.sleep(0.1)
+        try:
+            start = response.find('{"T":1051')
+            if start == -1:
+                return None
+            end = response.find('}', start) + 1
+            data = json.loads(response[start:end])
+            pos = {
+                "b": round(data["b"], 4),
+                "s": round(data["s"], 4),
+                "e": round(data["e"], 4),
+                "t": round(data["t"], 4),
+            }
+            if "p" in data:
+                pos["p"] = round(data["p"], 2)
+            if "tilt" in data:
+                pos["tilt"] = round(data["tilt"], 2)
+            return pos
+        except (json.JSONDecodeError, KeyError):
+            return None
+
+    def _wait_esp32_ready(self, label=""):
+        """轮询 T:105 直到 ESP32 回复，确认不再阻塞"""
+        t0 = time.time()
+        while time.time() - t0 < ESP32_BLOCK_TIMEOUT:
+            time.sleep(ESP32_POLL_INTERVAL)
+            result = self.read_position_raw()
+            if result is not None:
+                return True
+        print(f" ⚠ ESP32 {label} 超时 {ESP32_BLOCK_TIMEOUT}s", end="", flush=True)
+        return False
+
+    def recall_position_block(self, pos_dict):
+        """静默版 recall，串行发送 T:102 → T:700 → T:703，每步等 ESP32 就绪"""
+        hand_val = pos_dict["t"]
+        if hand_val < HAND_RAD_MIN or hand_val > HAND_RAD_MAX:
+            print(f"[SAFETY BLOCK] hand={math.degrees(hand_val):.1f}° out of safe range [55°~223°]")
+            return None
+        if "tilt" in pos_dict and TILT_DANGER_MIN < pos_dict["tilt"] < TILT_DANGER_MAX:
+            print(f"[SAFETY BLOCK] tilt={pos_dict['tilt']:.1f}° in danger zone [{TILT_DANGER_MIN}°~{TILT_DANGER_MAX}°]")
+            return None
+
+        t_cmd = time.time()
+        # Step 1: 发送臂关节命令（T:102 不阻塞 ESP32，但舵机需要物理时间）
+        self.ser.write((json.dumps({
+            "T": 102,
+            "base": pos_dict["b"],
+            "shoulder": pos_dict["s"],
+            "elbow": pos_dict["e"],
+            "hand": pos_dict["t"],
+            "spd": 0,
+            "acc": 10,
+        }) + "\n").encode())
+
+        # Step 2: 等臂关节物理到位，再发 roll/tilt（避免同时运动）
+        if "p" in pos_dict or "tilt" in pos_dict:
+            time.sleep(ARM_MOVE_WAIT)
+
+        # Step 3: 发 roll（T:700 阻塞 ESP32 约 1-5s）
+        if "p" in pos_dict:
+            self.ser.write((json.dumps({"T": 700, "angle": float(pos_dict["p"])}) + "\n").encode())
+            self._wait_esp32_ready("roll")
+
+        # Step 4: 发 tilt（T:703 阻塞 ESP32 约 3-7s）
+        if "tilt" in pos_dict:
+            self.ser.write((json.dumps({"T": 703, "angle": float(pos_dict["tilt"])}) + "\n").encode())
+            self._wait_esp32_ready("tilt")
+
+        return t_cmd
+
+    def wait_tilt_roll_stable(self, target_pos):
+        """
+        轮询编码器，等待 tilt (ID17) 和 roll (ID16) 到位。
+        先等 TILT_ROLL_INITIAL_WAIT，然后循环读编码器，
+        连续 TILT_ROLL_STABLE_COUNT 次读数变化均 < TILT_ROLL_STABLE_THRESH 时判定稳定。
+        超时 TILT_ROLL_TIMEOUT 后强制返回。
+        返回: {"stable": bool, "wait_s": float, "t_stable": float or None}
+        """
+        has_p = "p" in target_pos
+        has_tilt = "tilt" in target_pos
+        if not has_p and not has_tilt:
+            return {"stable": True, "wait_s": 0.0, "t_stable": time.time()}
+
+        time.sleep(TILT_ROLL_INITIAL_WAIT)
+        t_start = time.time()
+        stable_count = 0
+        prev_p = None
+        prev_tilt = None
+
+        while time.time() - t_start < TILT_ROLL_TIMEOUT - TILT_ROLL_INITIAL_WAIT:
+            cur = self.read_position_raw()
+            if cur is None:
+                continue
+
+            cur_p = cur.get("p")
+            cur_tilt = cur.get("tilt")
+
+            if prev_p is not None and prev_tilt is not None:
+                p_ok = (not has_p) or (cur_p is not None and abs(cur_p - prev_p) < TILT_ROLL_STABLE_THRESH)
+                tilt_ok = (not has_tilt) or (cur_tilt is not None and abs(cur_tilt - prev_tilt) < TILT_ROLL_STABLE_THRESH)
+
+                if p_ok and tilt_ok:
+                    stable_count += 1
+                    if stable_count >= TILT_ROLL_STABLE_COUNT:
+                        t_stable = time.time()
+                        time.sleep(TILT_ROLL_POST_STABLE)
+                        wait_total = time.time() - t_start + TILT_ROLL_INITIAL_WAIT
+                        return {"stable": True, "wait_s": wait_total, "t_stable": t_stable}
+                else:
+                    stable_count = 0
+
+            prev_p = cur_p
+            prev_tilt = cur_tilt
+
+        wait_total = time.time() - t_start + TILT_ROLL_INITIAL_WAIT
+        print(f" ⚠ tilt/roll 超时 {TILT_ROLL_TIMEOUT}s", end="", flush=True)
+        return {"stable": False, "wait_s": wait_total, "t_stable": None}
+
+    def sync_motion(self):
+        """同步脉冲：base 快速转 90° → 等 3s → 转回原位 → 等 3s，返回时间戳 dict"""
+        print("⚡ 发送同步脉冲 / Sending sync pulse...")
+        cur = self.read_position_raw()
+        if not cur:
+            print("  ⚠️  读取当前位置失败，使用默认值")
+            cur = {"b": 0.0, "s": 0.0, "e": 0.0, "t": math.radians(139)}
+
+        target_b = cur["b"] + math.pi / 2  # +90°，T:102 会找最短路径
+
+        sync_start = time.time()
+        self.ser.write((json.dumps({
+            "T": 102,
+            "base": target_b,
+            "shoulder": cur["s"],
+            "elbow": cur["e"],
+            "hand": cur["t"],
+            "spd": 0,
+            "acc": 10,
+        }) + "\n").encode())
+        time.sleep(3)
+
+        self.ser.write((json.dumps({
+            "T": 102,
+            "base": cur["b"],
+            "shoulder": cur["s"],
+            "elbow": cur["e"],
+            "hand": cur["t"],
+            "spd": 0,
+            "acc": 10,
+        }) + "\n").encode())
+        time.sleep(3)
+        sync_end = time.time()
+
+        print(f"✅ 同步脉冲完成 (duration: {sync_end - sync_start:.1f}s)")
+        return {"t_sync_start": sync_start, "t_sync_end": sync_end}
+
+    def run_single_trial(self, start_pos, target_pos, trial_meta):
+        """执行单次 trial，返回 trial 数据 dict，失败返回 None"""
+        t0 = time.time()
+        tid = trial_meta.get("trial_id", "?")
+
+        print(f"\n    [{tid}] recall START...", end="", flush=True)
+        if self.recall_position_block(start_pos) is None:
+            return None
+        print(f" {time.time()-t0:.1f}s", end="", flush=True)
+
+        print(f" | wait stable(start)...", end="", flush=True)
+        t1 = time.time()
+        self.wait_tilt_roll_stable(start_pos)
+        print(f" {time.time()-t1:.1f}s", end="", flush=True)
+
+        print(f" | recall TARGET...", end="", flush=True)
+        t2 = time.time()
+        t_move_cmd = self.recall_position_block(target_pos)
+        if t_move_cmd is None:
+            return None
+        print(f" {time.time()-t2:.1f}s", end="", flush=True)
+
+        print(f" | wait stable(target)...", end="", flush=True)
+        t3 = time.time()
+        tr_result = self.wait_tilt_roll_stable(target_pos)
+        t_tilt_roll_stable = tr_result.get("t_stable")
+        tilt_roll_wait_s = tr_result["wait_s"]
+        tilt_roll_stable = tr_result["stable"]
+        print(f" {time.time()-t3:.1f}s", end="", flush=True)
+
+        print(f" | mocap {MOCAP_WINDOW}s...", end="", flush=True)
+        encoder_before = self.read_position_raw()
+        t_mocap_start = time.time()
+        time.sleep(MOCAP_WINDOW)
+        encoder_after = self.read_position_raw()
+        t_mocap_end = time.time()
+        print(f" | total={time.time()-t0:.1f}s", flush=True)
+
+        return {
+            **trial_meta,
+            "t_move_cmd": t_move_cmd,
+            "t_tilt_roll_stable": t_tilt_roll_stable,
+            "tilt_roll_wait_s": tilt_roll_wait_s,
+            "tilt_roll_stable": tilt_roll_stable,
+            "t_mocap_start": t_mocap_start,
+            "t_mocap_end": t_mocap_end,
+            "enc_before": encoder_before,
+            "enc_after": encoder_after,
+        }
+
+    def run_precision_test(self):
+        """精度测试主入口：加载文件 → 确认 → sync → Block A → Block B → 保存日志"""
+        if not os.path.exists(TEST_POSITIONS_FILE):
+            print(f"❌ 找不到 {TEST_POSITIONS_FILE}，请先创建测试位置文件")
+            return
+        if not os.path.exists(SAFE_STARTS_FILE):
+            print(f"❌ 找不到 {SAFE_STARTS_FILE}，请先创建安全起始位置文件")
+            return
+
+        with open(TEST_POSITIONS_FILE, 'r') as f:
+            test_positions = json.load(f)
+        with open(SAFE_STARTS_FILE, 'r') as f:
+            safe_starts = json.load(f)
+
+        if "home" not in test_positions:
+            print("❌ test_positions.json 中必须包含名为 'home' 的位置")
+            return
+
+        home_pos = test_positions["home"]
+        target_names = sorted(k for k in test_positions if k != "home")
+        safe_start_items = list(safe_starts.items())  # [(name, dict), ...]
+
+        total_A = len(target_names) * BLOCK_A_REPEATS
+        total_B = len(target_names) * BLOCK_B_REPEATS
+        total = total_A + total_B
+        est_min = total * (ARM_MOVE_WAIT + ESP32_BLOCK_TIMEOUT*2 + TILT_ROLL_POST_STABLE*2 + MOCAP_WINDOW + 5) / 60
+
+        print("\n" + "=" * 58)
+        print("  🧪 精度测试 / Precision Test")
+        print("=" * 58)
+        print(f"  目标位置: {target_names}")
+        print(f"  安全起始位置: {len(safe_start_items)} 个")
+        print(f"  Block A: {len(target_names)} × {BLOCK_A_REPEATS} = {total_A} trials（固定 home 起始）")
+        print(f"  Block B: {len(target_names)} × {BLOCK_B_REPEATS} = {total_B} trials（随机起始）")
+        print(f"  总计: {total} trials，预计约 {est_min:.0f} 分钟")
+        print(f"  Settle: tilt/roll 到位检测 + {TILT_ROLL_POST_STABLE}s 缓冲（每个位置），mocap 窗口 {MOCAP_WINDOW}s")
+        print("=" * 58)
+
+        # 选择起始 Block
+        print("\n  从哪个 Block 开始？/ Start from which block?")
+        print("  [A] Block A + Block B（完整测试）")
+        print("  [B] 仅 Block B（跳过 Block A）")
+        while True:
+            start_choice = input("  选择 / Choose (A/B): ").strip().upper()
+            if start_choice in ("A", "B"):
+                break
+            print("  请输入 A 或 B")
+
+        input("\n确保 OptiTrack 已开始录制，按回车开始 / Press Enter to start: ")
+
+        sync_data = self.sync_motion()
+        test_start = time.time()
+        os.makedirs("precision_test_results", exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        trials = []
+        trial_id = 0
+
+        # Block A：固定起始（home）
+        if start_choice == "A":
+            print("\n--- Block A 开始 / Starting Block A ---")
+            for target_name in target_names:
+                target_pos = test_positions[target_name]
+                for repeat in range(1, BLOCK_A_REPEATS + 1):
+                    trial_id += 1
+                    print(f"  [A {trial_id:3d}/{total}] {target_name} #{repeat}", end="", flush=True)
+                    result = self.run_single_trial(
+                        home_pos, target_pos,
+                        {"trial_id": trial_id, "block": "A",
+                         "target_name": target_name, "start_name": "home", "repeat": repeat},
+                    )
+                    if result:
+                        trials.append(result)
+                        print(" ✓")
+                    else:
+                        print(" ✗ SKIPPED (safety block)")
+
+            input("\nBlock A 完成，按回车继续 Block B / Press Enter for Block B: ")
+
+        # Block B：随机起始
+        print("\n--- Block B 开始 / Starting Block B ---")
+        random.seed(RANDOM_SEED)
+        # 先把随机序列推进到 Block B 的起点（保证 seed 含义一致，无论是否跳过 A）
+        b_schedule = []
+        for target_name in target_names:
+            for repeat in range(1, BLOCK_B_REPEATS + 1):
+                b_schedule.append((target_name, repeat, random.choice(safe_start_items)))
+
+        for target_name, repeat, (start_name, start_pos) in b_schedule:
+            trial_id += 1
+            print(f"  [B {trial_id:3d}] {target_name} #{repeat} from {start_name}", end="", flush=True)
+            result = self.run_single_trial(
+                start_pos, test_positions[target_name],
+                {"trial_id": trial_id, "block": "B",
+                 "target_name": target_name, "start_name": start_name, "repeat": repeat},
+            )
+            if result:
+                trials.append(result)
+                print(" ✓")
+            else:
+                print(" ✗ SKIPPED (safety block)")
+
+        test_end = time.time()
+        print(f"\n✅ TEST_END  t={test_end:.3f}  duration={(test_end - test_start)/60:.1f} min")
+
+        # 保存 CSV
+        csv_path = f"precision_test_results/test_log_{ts}.csv"
+        csv_fields = [
+            "trial_id", "block", "target_name", "start_name", "repeat",
+            "t_move_cmd", "t_tilt_roll_stable", "tilt_roll_wait_s", "tilt_roll_stable",
+            "t_mocap_start", "t_mocap_end",
+            "enc_before_b", "enc_before_s", "enc_before_e", "enc_before_t", "enc_before_p", "enc_before_tilt",
+            "enc_after_b",  "enc_after_s",  "enc_after_e",  "enc_after_t",  "enc_after_p",  "enc_after_tilt",
+        ]
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=csv_fields)
+            writer.writeheader()
+            for tr in trials:
+                row = {k: tr.get(k, "") for k in ["trial_id", "block", "target_name", "start_name", "repeat",
+                                                    "t_move_cmd", "t_tilt_roll_stable", "tilt_roll_wait_s",
+                                                    "tilt_roll_stable", "t_mocap_start", "t_mocap_end"]}
+                for prefix, enc_key in [("enc_before", "enc_before"), ("enc_after", "enc_after")]:
+                    enc = tr.get(enc_key) or {}
+                    for joint in ["b", "s", "e", "t", "p", "tilt"]:
+                        row[f"{prefix}_{joint}"] = enc.get(joint, "")
+                writer.writerow(row)
+
+        # 保存 JSON
+        json_path = f"precision_test_results/test_log_{ts}.json"
+        with open(json_path, 'w') as f:
+            json.dump({
+                "test_config": {
+                    "TEST_POSITIONS_FILE": TEST_POSITIONS_FILE,
+                    "SAFE_STARTS_FILE": SAFE_STARTS_FILE,
+                    "MOVE_SETTLE_TIME": MOVE_SETTLE_TIME,
+                    "TARGET_SETTLE_TIME": TARGET_SETTLE_TIME,
+                    "MOCAP_WINDOW": MOCAP_WINDOW,
+                    "BLOCK_A_REPEATS": BLOCK_A_REPEATS,
+                    "BLOCK_B_REPEATS": BLOCK_B_REPEATS,
+                    "RANDOM_SEED": RANDOM_SEED,
+                },
+                "sync_pulse": sync_data,
+                "test_start": test_start,
+                "test_end": test_end,
+                "trials": trials,
+            }, f, indent=2)
+
+        print(f"\n📊 日志已保存:")
+        print(f"   CSV:  {csv_path}")
+        print(f"   JSON: {json_path}")
+
     def debug_mode(self):
         """调试模式 - 关闭所有电机扭矩，可自由读取位置 / Debug mode - all torque off"""
         print("\n" + "=" * 50)
@@ -409,6 +801,8 @@ def print_menu():
     print("  [15] 🏠 回到初始状态 / Reset to init position")
     print("  [16] 📤 发送自定义命令 / Send custom command")
     print("  [20] 🔧 调试模式 / Debug mode (all torque OFF)")
+    print("  [21] 🧪 精度测试 / Precision Test (automated)")
+    print("  [22] 💾 快速保存位置 / Quick save (no fold)")
     print("  [0]  退出 / Exit")
     print("-" * 50)
 
@@ -569,6 +963,16 @@ def main():
 
         elif choice == "20":
             controller.debug_mode()
+
+        elif choice == "21":
+            controller.run_precision_test()
+
+        elif choice == "22":
+            name = input("\n💾 输入位置名称 / Enter position name: ").strip()
+            if name:
+                controller.save_position(name)
+            else:
+                print("❌ 名称不能为空 / Name cannot be empty")
 
         elif choice == "16":
             cmd = input("输入JSON命令 / Enter JSON command: ").strip()
