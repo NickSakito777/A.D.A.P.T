@@ -10,5 +10,6 @@ data class ArmPosition(
     val e: Double = 1.57,      // Elbow 肘部
     val t: Double = 3.14,      // Hand 夹持器 (safe: 55deg-223deg)
     val p: Double? = null,     // Phone Roll (deg), 0-360
-    val tilt: Double? = null   // Phone Tilt (deg), safe: 0-106 and 284-360
+    val tilt: Double? = null,  // Phone Tilt (deg), safe: 0-106 and 284-360
+    val isSafe: Boolean = false // Setup 时标记为安全位置，急停后自动返回
 )

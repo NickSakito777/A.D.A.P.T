@@ -54,6 +54,7 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    implementation("androidx.compose.material:material-icons-extended")
     // USB 串口通信
     implementation("com.github.mik3y:usb-serial-for-android:3.8.1")
     // JSON 序列化

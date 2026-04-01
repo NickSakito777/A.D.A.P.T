@@ -16,20 +16,19 @@ import com.example.adaptapp.controller.ArmController
 import com.example.adaptapp.model.ArmPosition
 import com.example.adaptapp.repository.PositionRepository
 import com.example.adaptapp.ui.component.EmergencyStopButton
+import com.example.adaptapp.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-// Setup Mode 的步骤（对应 Python 工具选项 4 的流程）
 enum class SetupStep {
-    FOLDING,          // Step 1: 折叠到 torque closed
-    DRAG_ARM,         // Step 2: 拖动机械臂到目标位置
-    LOCKING,          // Step 3: 锁定中
-    ADJUST_ROLL,      // Step 4: 手动调 Roll
-    SAVE,             // Step 5: 输入名称并保存
-    DONE              // Step 6: 完成
+    FOLDING,
+    DRAG_ARM,
+    LOCKING,
+    ADJUST_ROLL,
+    SAVE,
+    DONE
 }
 
-// Setup Mode 界面 — 引导用户完成位置设定流程
 @Composable
 fun SetupScreen(
     connection: ConnectionManager,
@@ -40,11 +39,11 @@ fun SetupScreen(
     var step by remember { mutableStateOf(SetupStep.FOLDING) }
     var statusText by remember { mutableStateOf("") }
     var positionName by remember { mutableStateOf("") }
+    var isSafe by remember { mutableStateOf(false) }
     var feedbackPosition by remember { mutableStateOf<ArmPosition?>(null) }
     var saveError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
-    // 接收 ESP32 反馈
     var lastResponse by remember { mutableStateOf("") }
     LaunchedEffect(Unit) {
         connection.setOnReceiveCallback { message ->
@@ -52,7 +51,6 @@ fun SetupScreen(
         }
     }
 
-    // Step 1: 自动开始折叠
     LaunchedEffect(Unit) {
         statusText = "Moving to fold position..."
         // 先移到 torque closed（T:120 直接模式）
@@ -77,23 +75,19 @@ fun SetupScreen(
                 .padding(innerPadding)
                 .padding(16.dp)
         ) {
-            // === 标题 ===
             Text("Setup Mode", fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text("Position Setup / 位置设定", fontSize = 14.sp, color = Color.Gray)
+            Text("Position Setup", fontSize = 14.sp, color = AdaptGrayDark)
             Spacer(modifier = Modifier.height(12.dp))
 
-            // === 步骤指示器 ===
             StepIndicator(step)
             Spacer(modifier = Modifier.height(16.dp))
 
-            // === 主内容区（根据步骤显示不同内容）===
             Box(modifier = Modifier.weight(1f)) {
                 when (step) {
                     SetupStep.FOLDING -> {
                         StepContent(
                             title = "Folding Arm...",
-                            description = "Moving to safe fold position, then releasing torque.\n" +
-                                    "先移动到安全折叠位置，再松开扭矩。",
+                            description = "Do not touch the arm while it returns to a safe position.",
                             showProgress = true
                         )
                     }
@@ -102,19 +96,16 @@ fun SetupScreen(
                         Column {
                             StepContent(
                                 title = "Drag Arm to Position",
-                                description = "Torque is OFF. Manually move the arm to your desired position.\n" +
-                                        "扭矩已关闭。请手动拖动机械臂到目标位置。"
+                                description = "Hold the arm in your desired position, then press confirm."
                             )
                             Spacer(modifier = Modifier.height(24.dp))
                             Button(
                                 onClick = {
                                     step = SetupStep.LOCKING
                                     scope.launch {
-                                        // 锁定所有电机
                                         statusText = "Locking arm..."
                                         controller.setTorque(true)
                                         delay(500)
-                                        // 单独解锁 Roll
                                         controller.setRollTorque(false)
                                         delay(300)
                                         step = SetupStep.ADJUST_ROLL
@@ -125,13 +116,13 @@ fun SetupScreen(
                                     .fillMaxWidth()
                                     .height(56.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF4CAF50)
+                                    containerColor = AdaptGreen
                                 )
                             ) {
                                 Text(
-                                    "Position Ready / 位置就绪",
+                                    "POSITION READY",
                                     fontSize = 18.sp,
-                                    color = Color.White,
+                                    color = AdaptWhite,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -141,8 +132,7 @@ fun SetupScreen(
                     SetupStep.LOCKING -> {
                         StepContent(
                             title = "Locking Arm...",
-                            description = "Locking joints and releasing Roll for adjustment.\n" +
-                                    "锁定关节，释放 Roll 以便调整。",
+                            description = "Locking arm...",
                             showProgress = true
                         )
                     }
@@ -151,10 +141,7 @@ fun SetupScreen(
                         Column {
                             StepContent(
                                 title = "Adjust Phone Roll",
-                                description = "Arm is LOCKED. Roll is FREE.\n" +
-                                        "Rotate the phone to your desired orientation.\n\n" +
-                                        "机械臂已锁定。Roll 已释放。\n" +
-                                        "请手动旋转手机到需要的横竖屏方向。"
+                                description = "Adjust the phone to your desired orientation, then press confirm."
                             )
                             Spacer(modifier = Modifier.height(24.dp))
                             Button(
@@ -163,13 +150,13 @@ fun SetupScreen(
                                     .fillMaxWidth()
                                     .height(56.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF1565C0)
+                                    containerColor = AdaptBlueDark
                                 )
                             ) {
                                 Text(
-                                    "Roll Ready / Roll 就绪",
+                                    "CONFIRM",
                                     fontSize = 18.sp,
-                                    color = Color.White,
+                                    color = AdaptWhite,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -180,22 +167,37 @@ fun SetupScreen(
                         Column {
                             StepContent(
                                 title = "Save Position",
-                                description = "Enter a name for this position.\n" +
-                                        "请输入位置名称。"
+                                description = "You can now let go of the arm."
                             )
                             Spacer(modifier = Modifier.height(16.dp))
 
                             OutlinedTextField(
                                 value = positionName,
                                 onValueChange = { positionName = it; saveError = null },
-                                label = { Text("Position Name / 位置名称") },
+                                label = { Text("POSITION NAME") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth()
                             )
 
                             saveError?.let {
-                                Text(it, color = Color.Red, fontSize = 13.sp,
+                                Text(it, color = AdaptRed, fontSize = 13.sp,
                                     modifier = Modifier.padding(top = 4.dp))
+                            }
+
+                            Spacer(modifier = Modifier.height(12.dp))
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = "Set as safe position?",
+                                    fontSize = 14.sp,
+                                    color = AdaptTextPrimary,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Checkbox(
+                                    checked = isSafe,
+                                    onCheckedChange = { isSafe = it },
+                                    colors = CheckboxDefaults.colors(checkedColor = AdaptBlue)
+                                )
                             }
 
                             Spacer(modifier = Modifier.height(16.dp))
@@ -204,49 +206,45 @@ fun SetupScreen(
                                 onClick = {
                                     val name = positionName.trim()
                                     if (name.isEmpty()) {
-                                        saveError = "Name cannot be empty / 名称不能为空"
+                                        saveError = "Name cannot be empty"
                                         return@Button
                                     }
-                                    // 位置名只允许英文（语音识别需要）
                                     if (!name.matches(Regex("^[a-zA-Z0-9 _-]+$"))) {
-                                        saveError = "English only (letters, numbers, spaces) / 仅限英文"
+                                        saveError = "English only (letters, numbers, spaces)"
                                         return@Button
                                     }
 
                                     scope.launch {
                                         statusText = "Reading position..."
-                                        // 读取当前位置
                                         lastResponse = ""
                                         controller.readFeedback()
-                                        // 等待 ESP32 返回
                                         delay(1000)
 
                                         val parsed = ArmController.parseFeedback(lastResponse)
                                         if (parsed != null) {
-                                            val position = parsed.copy(name = name)
+                                            val position = parsed.copy(name = name, isSafe = isSafe)
                                             repository.save(position)
                                             feedbackPosition = position
-                                            // 恢复 Roll 扭矩
                                             controller.setRollTorque(true)
                                             step = SetupStep.DONE
                                             statusText = ""
                                         } else {
-                                            saveError = "Failed to read position / 读取位置失败，请重试"
+                                            saveError = "Failed to read position. Please try again."
                                             statusText = ""
                                         }
                                     }
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(52.dp),
+                                    .height(56.dp),
                                 colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF4CAF50)
+                                    containerColor = AdaptBlue
                                 )
                             ) {
                                 Text(
-                                    "Save / 保存",
+                                    "SAVE",
                                     fontSize = 18.sp,
-                                    color = Color.White,
+                                    color = AdaptWhite,
                                     fontWeight = FontWeight.Bold
                                 )
                             }
@@ -257,16 +255,14 @@ fun SetupScreen(
                         Column {
                             StepContent(
                                 title = "Position Saved!",
-                                description = "\"${feedbackPosition?.name}\" has been saved successfully.\n" +
-                                        "位置已保存成功。"
+                                description = "Position saved successfully!"
                             )
 
-                            // 显示保存的角度值
                             feedbackPosition?.let { pos ->
                                 Spacer(modifier = Modifier.height(12.dp))
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5))
+                                    colors = CardDefaults.cardColors(containerColor = AdaptGray)
                                 ) {
                                     Column(modifier = Modifier.padding(12.dp)) {
                                         AngleRow("Base", "%.4f rad".format(pos.b))
@@ -281,13 +277,12 @@ fun SetupScreen(
 
                             Spacer(modifier = Modifier.height(24.dp))
 
-                            // 继续保存 or 退出
                             Row(modifier = Modifier.fillMaxWidth()) {
                                 OutlinedButton(
                                     onClick = {
-                                        // 重新进入 Setup 流程
                                         step = SetupStep.FOLDING
                                         positionName = ""
+                                        isSafe = false
                                         feedbackPosition = null
                                         saveError = null
                                         scope.launch {
@@ -305,16 +300,16 @@ fun SetupScreen(
                                             statusText = ""
                                         }
                                     },
-                                    modifier = Modifier.weight(1f).height(48.dp)
+                                    modifier = Modifier.weight(1f).height(56.dp)
                                 ) {
-                                    Text("Save Another\n再保存一个", fontSize = 12.sp, lineHeight = 15.sp)
+                                    Text("SAVE ANOTHER", fontSize = 14.sp)
                                 }
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Button(
                                     onClick = onExit,
-                                    modifier = Modifier.weight(1f).height(48.dp)
+                                    modifier = Modifier.weight(1f).height(56.dp)
                                 ) {
-                                    Text("Done / 完成", fontSize = 16.sp)
+                                    Text("DONE", fontSize = 16.sp)
                                 }
                             }
                         }
@@ -322,43 +317,37 @@ fun SetupScreen(
                 }
             }
 
-            // === 状态文字 ===
             if (statusText.isNotEmpty()) {
                 Text(
                     statusText,
                     fontSize = 13.sp,
-                    color = Color.Gray,
+                    color = AdaptGrayDark,
                     modifier = Modifier.padding(vertical = 4.dp)
                 )
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // === 底部按钮 ===
             Row(modifier = Modifier.fillMaxWidth()) {
-                // 取消/退出
                 OutlinedButton(
                     onClick = {
-                        // 恢复扭矩后退出
                         controller.setTorque(true)
                         controller.setRollTorque(true)
                         onExit()
                     },
-                    modifier = Modifier.weight(1f).height(48.dp)
+                    modifier = Modifier.weight(1f).height(56.dp)
                 ) {
-                    Text("Cancel / 取消")
+                    Text("CANCEL")
                 }
             }
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // === 急停（始终可见）===
             EmergencyStopButton(onStop = { controller.emergencyStop() })
         }
     }
 }
 
-// 步骤指示器
 @Composable
 fun StepIndicator(current: SetupStep) {
     val steps = listOf(
@@ -378,8 +367,8 @@ fun StepIndicator(current: SetupStep) {
             val isActive = current == step
             val isPast = current.ordinal > step.ordinal
             val color = when {
-                isActive -> Color(0xFF1565C0)
-                isPast -> Color(0xFF4CAF50)
+                isActive -> AdaptBlue
+                isPast -> AdaptGreen
                 else -> Color(0xFFBDBDBD)
             }
 
@@ -403,7 +392,6 @@ fun StepIndicator(current: SetupStep) {
     }
 }
 
-// 步骤内容块
 @Composable
 fun StepContent(
     title: String,
@@ -413,7 +401,7 @@ fun StepContent(
     Column {
         Text(title, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(8.dp))
-        Text(description, fontSize = 14.sp, color = Color(0xFF616161), lineHeight = 20.sp)
+        Text(description, fontSize = 14.sp, color = AdaptGrayDark, lineHeight = 20.sp)
         if (showProgress) {
             Spacer(modifier = Modifier.height(16.dp))
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
@@ -421,7 +409,6 @@ fun StepContent(
     }
 }
 
-// 角度值显示行
 @Composable
 fun AngleRow(label: String, value: String) {
     Row(
@@ -430,7 +417,7 @@ fun AngleRow(label: String, value: String) {
             .padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(label, fontSize = 14.sp, color = Color.Gray)
+        Text(label, fontSize = 14.sp, color = AdaptGrayDark)
         Text(value, fontSize = 14.sp, fontWeight = FontWeight.Medium)
     }
 }
