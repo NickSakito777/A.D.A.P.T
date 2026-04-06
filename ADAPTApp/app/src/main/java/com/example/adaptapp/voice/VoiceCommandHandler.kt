@@ -140,6 +140,12 @@ class VoiceCommandHandler(
     private fun processText(text: String) {
         Log.i(TAG, "=== Processing speech: \"$text\" ===")
 
+        // EXECUTING 期间拒绝新命令（急停除外，由 onWakeWord 处理）
+        if (_voiceState.value.status == VoiceStatus.EXECUTING) {
+            Log.w(TAG, "Ignoring command during EXECUTING state")
+            return
+        }
+
         // 急停优先级最高
         val lower = text.lowercase()
         if (lower.contains("stop") || lower.contains("emergency")) {
@@ -259,6 +265,13 @@ class VoiceCommandHandler(
     private fun executeAction(action: PendingAction) {
         if (!checkConnection()) return
 
+        if (positionRepository.getAll().none { it.isSafe }) {
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please define a safe position first")
+            return
+        }
+
         pendingAction = null
         pendingCandidates = null
         srFailureCount = 0
@@ -272,6 +285,7 @@ class VoiceCommandHandler(
         when (action) {
             is PendingAction.MoveToPosition -> {
                 armController.moveTo(action.position)
+                positionRepository.recordUsage(action.name)
                 feedback.speak("Moving to ${action.name}")
             }
             is PendingAction.Fold -> {
@@ -285,6 +299,12 @@ class VoiceCommandHandler(
 
     // 执行即时命令（横屏 / 竖屏 — 无需等待）
     private fun executeImmediate(ttsMessage: String, command: () -> Unit) {
+        if (positionRepository.getAll().none { it.isSafe }) {
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please define a safe position first")
+            return
+        }
         command()
         srFailureCount = 0
         // openWakeWord 和 TTS 可共存，直接恢复待命
@@ -298,7 +318,7 @@ class VoiceCommandHandler(
         cancelAllTimers()
         stopSpeechRecognizer()
         feedback.stop()
-        armController.emergencyStop()
+        armController.emergencyStop(positionRepository.getAll().find { it.isSafe })
         pendingAction = null
         pendingCandidates = null
         srFailureCount = 0

@@ -33,17 +33,16 @@ class ArmController(var connection: ConnectionManager) {
         send("""{"T":120,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
     }
 
-    // 急停：停止运动 → 锁扭矩 → 4s 后折叠 → 4s 后松扭矩
-    fun emergencyStop() {
+    // 急停：停止运动 → 锁扭矩 → 4s 后移到 safe position（如有）
+    fun emergencyStop(safePosition: ArmPosition? = null) {
         handler.removeCallbacksAndMessages(ESTOP_TOKEN)
         send("""{"T":0}""")
         setTorque(true)
-        handler.postDelayed({
-            foldAndRelease()
+        if (safePosition != null) {
             handler.postDelayed({
-                setTorque(false)
+                moveTo(safePosition)
             }, ESTOP_TOKEN, 4000)
-        }, ESTOP_TOKEN, 4000)
+        }
     }
 
     // 读取当前关节反馈（T:105 → ESP32 返回 T:1051）

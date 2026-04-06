@@ -23,13 +23,17 @@ import androidx.core.app.ActivityCompat
 import com.example.adaptapp.connection.BluetoothSppManager
 import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionMode
+import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.connection.UsbSerialManager
 import com.example.adaptapp.controller.ArmController
+import com.example.adaptapp.model.ArmPosition
 import com.example.adaptapp.repository.PositionRepository
 import com.example.adaptapp.ui.component.EmergencyStopButton
 import com.example.adaptapp.ui.screen.DebugScreen
+import com.example.adaptapp.ui.screen.HomeScreen
 import com.example.adaptapp.ui.screen.PositionsScreen
 import com.example.adaptapp.ui.screen.SetupScreen
+import com.example.adaptapp.ui.component.BluetoothDeviceDialog
 import com.example.adaptapp.ui.theme.ADAPTAppTheme
 import com.example.adaptapp.ui.theme.AdaptGrayDark
 import com.example.adaptapp.ui.theme.AdaptTextPrimary
@@ -38,7 +42,7 @@ import com.example.adaptapp.voice.VoiceFeedback
 import com.example.adaptapp.voice.WakeWordService
 import kotlinx.coroutines.launch
 
-enum class Screen { POSITIONS, SETUP, DEBUG }
+enum class Screen { HOME, POSITIONS, SETUP, DEBUG }
 
 class MainActivity : ComponentActivity() {
 
@@ -91,9 +95,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             ADAPTAppTheme {
-                var currentScreen by remember { mutableStateOf(Screen.POSITIONS) }
+                var currentScreen by remember { mutableStateOf(Screen.HOME) }
                 var activeMode by remember { mutableStateOf(ConnectionMode.USB) }
                 val drawerState = rememberDrawerState(DrawerValue.Closed)
+                var showBtPicker by remember { mutableStateOf(false) }
                 val scope = rememberCoroutineScope()
 
                 val activeConnection: ConnectionManager = when (activeMode) {
@@ -109,10 +114,27 @@ class MainActivity : ComponentActivity() {
                     activeMode = newMode
                 }
 
+                val onBtTap: () -> Unit = {
+                    if (!(activeMode == ConnectionMode.BLUETOOTH && activeConnection.connectionState.value == ConnectionState.CONNECTED)) {
+                        val paired = btManager.getPairedDevices()
+                        val target = paired.find { it.name == BluetoothSppManager.TARGET_DEVICE_NAME }
+                        if (target != null) {
+                            activeMode = ConnectionMode.BLUETOOTH
+                            btManager.connectToDevice(target.address)
+                        } else {
+                            showBtPicker = true
+                        }
+                    }
+                }
+
+                val getSafePosition: () -> ArmPosition? = {
+                    positionRepository.getAll().find { it.isSafe }
+                }
+
                 val voiceState by voiceCommandHandler.voiceState.collectAsState()
                 var voiceEnabled by remember { mutableStateOf(true) }
                 LaunchedEffect(currentScreen, voiceEnabled) {
-                    if (currentScreen == Screen.POSITIONS && voiceAvailable && voiceEnabled) {
+                    if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) && voiceAvailable && voiceEnabled) {
                         voiceCommandHandler.resume()
                     } else {
                         voiceCommandHandler.pause()
@@ -121,7 +143,7 @@ class MainActivity : ComponentActivity() {
 
                 ModalNavigationDrawer(
                     drawerState = drawerState,
-                    gesturesEnabled = currentScreen == Screen.POSITIONS,
+                    gesturesEnabled = currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS,
                     drawerContent = {
                         DrawerContent(
                             onNavigate = { screen ->
@@ -129,18 +151,31 @@ class MainActivity : ComponentActivity() {
                                 scope.launch { drawerState.close() }
                             },
                             onClose = { scope.launch { drawerState.close() } },
-                            onEmergencyStop = { armController.emergencyStop() }
+                            onEmergencyStop = { armController.emergencyStop(getSafePosition()) }
                         )
                     }
                 ) {
                     when (currentScreen) {
+                        Screen.HOME -> HomeScreen(
+                            connection = activeConnection,
+                            controller = armController,
+                            repository = positionRepository,
+                            currentMode = activeMode,
+                            onSwitchMode = onSwitchMode,
+                            onBtTap = onBtTap,
+                            voiceState = voiceState,
+                            voiceEnabled = voiceEnabled,
+                            onVoiceToggle = { voiceEnabled = it },
+                            onEnterSetup = { currentScreen = Screen.SETUP },
+                            onOpenDrawer = { scope.launch { drawerState.open() } }
+                        )
                         Screen.POSITIONS -> PositionsScreen(
                             connection = activeConnection,
                             controller = armController,
                             repository = positionRepository,
                             currentMode = activeMode,
-                            btManager = btManager,
                             onSwitchMode = onSwitchMode,
+                            onBtTap = onBtTap,
                             voiceState = voiceState,
                             voiceEnabled = voiceEnabled,
                             onVoiceToggle = { voiceEnabled = it },
@@ -162,6 +197,18 @@ class MainActivity : ComponentActivity() {
                             onBack = { currentScreen = Screen.POSITIONS }
                         )
                     }
+                }
+
+                if (showBtPicker) {
+                    BluetoothDeviceDialog(
+                        btManager = btManager,
+                        onDeviceSelected = { address ->
+                            showBtPicker = false
+                            activeMode = ConnectionMode.BLUETOOTH
+                            btManager.connectToDevice(address)
+                        },
+                        onDismiss = { showBtPicker = false }
+                    )
                 }
             }
         }
@@ -200,7 +247,7 @@ private fun DrawerContent(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            DrawerItem("HOME") { onNavigate(Screen.POSITIONS) }
+            DrawerItem("HOME") { onNavigate(Screen.HOME) }
             Spacer(modifier = Modifier.height(16.dp))
             DrawerItem("POSITIONS") { onNavigate(Screen.POSITIONS) }
             Spacer(modifier = Modifier.height(16.dp))

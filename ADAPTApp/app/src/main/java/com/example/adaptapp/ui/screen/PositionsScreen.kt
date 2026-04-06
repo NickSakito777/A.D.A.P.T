@@ -1,8 +1,10 @@
 package com.example.adaptapp.ui.screen
 
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -18,20 +20,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.adaptapp.connection.BluetoothSppManager
 import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionMode
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.controller.ArmController
 import com.example.adaptapp.model.ArmPosition
 import com.example.adaptapp.repository.PositionRepository
-import com.example.adaptapp.ui.component.BluetoothDeviceDialog
 import com.example.adaptapp.ui.component.ConfirmMoveDialog
 import com.example.adaptapp.ui.component.EditPositionDialog
 import com.example.adaptapp.ui.component.EmergencyStopButton
 import com.example.adaptapp.ui.theme.*
 import com.example.adaptapp.voice.VoiceState
 import com.example.adaptapp.voice.VoiceStatus
+import androidx.compose.ui.platform.LocalContext
+import android.widget.Toast
 
 @Composable
 fun PositionsScreen(
@@ -39,8 +41,8 @@ fun PositionsScreen(
     controller: ArmController,
     repository: PositionRepository,
     currentMode: ConnectionMode,
-    btManager: BluetoothSppManager?,
     onSwitchMode: ((ConnectionMode) -> Unit)?,
+    onBtTap: () -> Unit,
     voiceState: VoiceState?,
     voiceEnabled: Boolean,
     onVoiceToggle: ((Boolean) -> Unit)?,
@@ -50,14 +52,14 @@ fun PositionsScreen(
 ) {
     val connectionState by connection.connectionState.collectAsState()
     val isConnected = connectionState == ConnectionState.CONNECTED
+    val context = LocalContext.current
 
     var positions by remember { mutableStateOf(repository.getAll()) }
     var currentPage by remember { mutableStateOf(0) }
     var confirmTarget by remember { mutableStateOf<ArmPosition?>(null) }
     var editTarget by remember { mutableStateOf<ArmPosition?>(null) }
-    var showBtPicker by remember { mutableStateOf(false) }
 
-    val pageSize = 3
+    val pageSize = 4
     val totalPages = maxOf(1, (positions.size + pageSize - 1) / pageSize)
 
     fun refreshPositions() {
@@ -72,27 +74,17 @@ fun PositionsScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(AdaptWhite)
+            .statusBarsPadding()
             .padding(horizontal = 16.dp)
     ) {
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         // 1. Top Bar
         TopBar(
             voiceEnabled = voiceEnabled,
             onVoiceToggle = onVoiceToggle,
             btConnected = currentMode == ConnectionMode.BLUETOOTH && isConnected,
-            onBtTap = {
-                if (currentMode == ConnectionMode.BLUETOOTH && isConnected) return@TopBar
-                if (btManager == null) return@TopBar
-                val paired = btManager.getPairedDevices()
-                val target = paired.find { it.name == BluetoothSppManager.TARGET_DEVICE_NAME }
-                if (target != null) {
-                    onSwitchMode?.invoke(ConnectionMode.BLUETOOTH)
-                    btManager.connectToDevice(target.address)
-                } else {
-                    showBtPicker = true
-                }
-            },
+            onBtTap = onBtTap,
             onOpenDrawer = onOpenDrawer
         )
 
@@ -135,7 +127,8 @@ fun PositionsScreen(
             )
             Text(
                 "${currentPage + 1} / $totalPages",
-                fontSize = 14.sp,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
                 color = AdaptGrayDark
             )
             Text(
@@ -151,23 +144,75 @@ fun PositionsScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 5. Position Cards
+        // 5. Position Cards — 4 cards fill available space
         Column(modifier = Modifier.weight(1f)) {
             if (positions.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No saved positions", color = AdaptGrayDark, fontSize = 16.sp)
+                    Text("No saved positions", color = AdaptGrayDark, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                 }
             } else {
                 pagePositions.forEach { pos ->
                     PositionCard(
                         position = pos,
-                        onTap = { if (isConnected) confirmTarget = pos },
-                        onEdit = { editTarget = pos }
+                        onTap = {
+                            if (isConnected && voiceState?.status != VoiceStatus.EXECUTING)
+                                confirmTarget = pos
+                        },
+                        onEdit = { editTarget = pos },
+                        modifier = Modifier.weight(1f)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
         }
+
+        // 5.5 Safe Position
+        val safePosition = positions.find { it.isSafe }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Card(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(64.dp)
+                    .clickable(enabled = isConnected && voiceState?.status != VoiceStatus.EXECUTING && safePosition != null) {
+                        safePosition?.let { confirmTarget = it }
+                    },
+                shape = RoundedCornerShape(8.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFE1BEE7))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        safePosition?.name ?: "No safe position",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF7B1FA2),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            IconButton(
+                onClick = {
+                    if (isConnected) onEnterSetup()
+                    else Toast.makeText(context, "Please connect to the arm first", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFE1BEE7))
+            ) {
+                Icon(Icons.Default.Add, contentDescription = "Add", tint = Color(0xFF7B1FA2))
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
 
         // 6. Add button
         OutlinedButton(
@@ -187,7 +232,7 @@ fun PositionsScreen(
 
         // 7. Emergency Stop
         EmergencyStopButton(
-            onStop = { controller.emergencyStop() },
+            onStop = { controller.emergencyStop(positions.find { it.isSafe }) },
             modifier = Modifier.padding(bottom = 16.dp)
         )
     }
@@ -197,7 +242,12 @@ fun PositionsScreen(
         ConfirmMoveDialog(
             positionName = target.name,
             onConfirm = {
-                controller.moveTo(target)
+                if (positions.none { it.isSafe }) {
+                    Toast.makeText(context, "Please define a safe position first", Toast.LENGTH_SHORT).show()
+                } else {
+                    controller.moveTo(target)
+                    repository.recordUsage(target.name)
+                }
                 confirmTarget = null
             },
             onDismiss = { confirmTarget = null }
@@ -224,17 +274,6 @@ fun PositionsScreen(
         )
     }
 
-    if (showBtPicker && btManager != null) {
-        BluetoothDeviceDialog(
-            btManager = btManager,
-            onDeviceSelected = { address ->
-                showBtPicker = false
-                onSwitchMode?.invoke(ConnectionMode.BLUETOOTH)
-                btManager.connectToDevice(address)
-            },
-            onDismiss = { showBtPicker = false }
-        )
-    }
 }
 
 @Composable
@@ -313,7 +352,7 @@ private fun ConnectionBar(
                 .background(dotColor, RoundedCornerShape(5.dp))
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text("$modeLabel \u00B7 $stateLabel", fontSize = 14.sp, color = AdaptTextPrimary)
+        Text("$modeLabel \u00B7 $stateLabel", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = AdaptTextPrimary)
         Spacer(modifier = Modifier.weight(1f))
         if (state == ConnectionState.DISCONNECTED && onSwitchMode != null) {
             val altMode = if (currentMode == ConnectionMode.USB) ConnectionMode.BLUETOOTH else ConnectionMode.USB
@@ -323,7 +362,7 @@ private fun ConnectionBar(
                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
                 modifier = Modifier.height(28.dp)
             ) {
-                Text(altLabel, fontSize = 12.sp, color = AdaptBlue)
+                Text(altLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AdaptBlue)
             }
         }
     }
@@ -348,7 +387,7 @@ private fun VoiceStatusBar(state: VoiceState) {
                 .background(dotColor, RoundedCornerShape(4.dp))
         )
         Spacer(modifier = Modifier.width(6.dp))
-        Text(state.displayText, fontSize = 12.sp, color = dotColor)
+        Text(state.displayText, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = dotColor)
     }
 }
 
@@ -356,16 +395,16 @@ private fun VoiceStatusBar(state: VoiceState) {
 private fun PositionCard(
     position: ArmPosition,
     onTap: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     Card(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .height(64.dp)
             .clickable(onClick = onTap),
         shape = RoundedCornerShape(8.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (position.isSafe) AdaptGreenLight else AdaptGray
+            containerColor = if (position.isSafe) Color(0xFFE1BEE7) else AdaptGray
         )
     ) {
         Row(
@@ -376,13 +415,14 @@ private fun PositionCard(
         ) {
             Text(
                 position.name,
-                fontSize = 18.sp,
-                fontWeight = if (position.isSafe) FontWeight.Bold else FontWeight.Medium,
-                color = if (position.isSafe) AdaptGreen else AdaptTextPrimary,
+                fontSize = 22.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (position.isSafe) Color(0xFF7B1FA2) else AdaptTextPrimary,
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = onEdit) {
-                Icon(Icons.Default.Edit, contentDescription = "Edit", tint = AdaptGrayDark)
+                Icon(Icons.Default.Edit, contentDescription = "Edit",
+                    tint = if (position.isSafe) Color(0xFF7B1FA2) else AdaptGrayDark)
             }
         }
     }
