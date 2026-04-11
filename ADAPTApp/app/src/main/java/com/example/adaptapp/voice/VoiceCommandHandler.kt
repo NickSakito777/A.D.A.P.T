@@ -50,7 +50,7 @@ class VoiceCommandHandler(
         private const val LISTEN_TIMEOUT_MS = 12000L
         private const val ARRIVAL_DELAY_MS = 4000L
         private const val MAX_SR_FAILURES = 3
-        private const val SR_FAILURE_DELAY_MS = 300L  // SR 失败后短延迟恢复唤醒词，避免长死时间导致用户新 hey arm 被吞
+        private const val SR_FAILURE_DELAY_MS = 300L  // SR 失败后短延迟恢复唤醒词，避免长死时间导致用户新 hey jarvis 被吞
     }
 
     // UI 观察的状态流
@@ -101,7 +101,7 @@ class VoiceCommandHandler(
     fun resume() {
         handler.post {
             srFailureCount = 0
-            setState(VoiceStatus.IDLE, "Say 'Hey Arm'")
+            setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
             onWakeWordStart?.invoke()
         }
     }
@@ -352,13 +352,13 @@ class VoiceCommandHandler(
 
     private fun handleArrival() {
         // openWakeWord 已在 executeAction 中启动，无需重复
-        setState(VoiceStatus.IDLE, "Say 'Hey Arm'")
+        setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
         feedback.speak("Arrived")
     }
 
     // 回到待命态：启动唤醒词 + 更新 UI
     private fun returnToIdle() {
-        setState(VoiceStatus.IDLE, "Say 'Hey Arm'")
+        setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
         onWakeWordStart?.invoke()
     }
 
@@ -464,7 +464,7 @@ class VoiceCommandHandler(
             feedback.speak("Voice recognition not working, please try again later")
             srFailureCount = 0
         }
-        setState(VoiceStatus.IDLE, "Say 'Hey Arm'")
+        setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
         handler.removeCallbacks(srFailureRestartRunnable)  // 防重复排队
         handler.postDelayed(srFailureRestartRunnable, SR_FAILURE_DELAY_MS)
     }

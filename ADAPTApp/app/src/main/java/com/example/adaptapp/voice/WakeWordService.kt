@@ -18,12 +18,13 @@ import kotlin.random.Random
 // openWakeWord 唤醒词检测服务（ONNX Runtime）
 // Wake word detection using openWakeWord ONNX models
 //
-// 需要在 assets/ 目录放置以下模型文件（PC 上用 Python 训练生成）：
-// Required model files in assets/ (trained on PC with openWakeWord Python):
-//   melspectrogram.onnx  — shared mel spectrogram extractor
-//   embedding_model.onnx — shared audio embedding model
-//   hey_arm.onnx         — "Hey Arm" wake word detector
-//   stop.onnx            — "Stop" wake word detector
+// 需要在 assets/ 目录放置以下模型文件：
+// Required model files in assets/:
+//   melspectrogram.onnx  — shared mel spectrogram extractor (openWakeWord pretrained)
+//   embedding_model.onnx — shared audio embedding model (openWakeWord pretrained)
+//   hey_jarvis.onnx      — "Hey Jarvis" wake word detector (openWakeWord 官方预训练模型)
+//   hey_arm.onnx         — 旧自训模型，保留作为回滚选项，当前未启用
+//   stop.onnx            — "Stop" wake word detector (自训)
 class WakeWordService(private val context: Context) {
 
     companion object {
@@ -36,7 +37,9 @@ class WakeWordService(private val context: Context) {
         const val MELSPEC_MODEL = "melspectrogram.onnx"
         const val EMBEDDING_MODEL = "embedding_model.onnx"
         val WAKE_WORD_MODELS = mapOf(
-            "hey arm" to "hey_arm.onnx",
+            "hey jarvis" to "hey_jarvis.onnx",
+            // 回滚 hey arm：注释上一行，打开下一行，并把 THRESHOLD_HEY_JARVIS 改回 0.45f
+            // "hey arm" to "hey_arm.onnx",
             "stop" to "stop.onnx"
         )
 
@@ -46,8 +49,8 @@ class WakeWordService(private val context: Context) {
         private const val EMBED_DIM = 96
         private const val EMBED_WINDOW = 16     // 16 embeddings for detection
 
-        private const val THRESHOLD_HEY_ARM = 0.45f  // H1 实验：0.5 下多次贴边成功，降至 0.45 让隐形 miss 过阈值
-        private const val THRESHOLD_STOP = 0.85f     // 急停不降，假阳性代价大
+        private const val THRESHOLD_HEY_JARVIS = 0.5f  // 官方预训练模型用默认阈值；回滚 hey_arm 时改回 0.45f
+        private const val THRESHOLD_STOP = 0.85f       // 急停不降，假阳性代价大
         private const val COOLDOWN_MS = 2000L   // 检测后冷却 2s 防重复
     }
 
@@ -226,7 +229,7 @@ class WakeWordService(private val context: Context) {
 
         for ((keyword, session) in wwSessions) {
             val score = runDetection(ortEnv, session) ?: continue
-            val threshold = if (keyword == "stop") THRESHOLD_STOP else THRESHOLD_HEY_ARM
+            val threshold = if (keyword == "stop") THRESHOLD_STOP else THRESHOLD_HEY_JARVIS
             if (score > threshold) {
                 lastDetectionTime = now
                 Log.i(TAG, "Detected '$keyword' score=${"%.3f".format(score)}")
