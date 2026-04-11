@@ -50,7 +50,7 @@ class VoiceCommandHandler(
         private const val LISTEN_TIMEOUT_MS = 12000L
         private const val ARRIVAL_DELAY_MS = 4000L
         private const val MAX_SR_FAILURES = 3
-        private const val SR_FAILURE_DELAY_MS = 3000L  // SR 失败后延迟恢复唤醒词，防误触发循环
+        private const val SR_FAILURE_DELAY_MS = 300L  // SR 失败后短延迟恢复唤醒词，避免长死时间导致用户新 hey arm 被吞
     }
 
     // UI 观察的状态流
@@ -75,6 +75,8 @@ class VoiceCommandHandler(
 
     private val timeoutRunnable = Runnable { handleTimeout() }
     private val arrivalRunnable = Runnable { handleArrival() }
+    // 必须是 named Runnable，匿名 lambda 无法被 removeCallbacks 取消
+    private val srFailureRestartRunnable = Runnable { onWakeWordStart?.invoke() }
 
     // 待执行动作类型
     private sealed class PendingAction {
@@ -455,7 +457,7 @@ class VoiceCommandHandler(
         }
     }
 
-    // SR 失败处理 — 延迟恢复唤醒词，避免立即重启导致 stop 误触发循环
+    // SR 失败处理 — 短延迟恢复唤醒词
     private fun onSrFailure() {
         srFailureCount++
         if (srFailureCount >= MAX_SR_FAILURES) {
@@ -463,7 +465,8 @@ class VoiceCommandHandler(
             srFailureCount = 0
         }
         setState(VoiceStatus.IDLE, "Say 'Hey Arm'")
-        handler.postDelayed({ onWakeWordStart?.invoke() }, SR_FAILURE_DELAY_MS)
+        handler.removeCallbacks(srFailureRestartRunnable)  // 防重复排队
+        handler.postDelayed(srFailureRestartRunnable, SR_FAILURE_DELAY_MS)
     }
 
     private fun stopSpeechRecognizer() {
@@ -484,6 +487,7 @@ class VoiceCommandHandler(
     private fun cancelAllTimers() {
         handler.removeCallbacks(timeoutRunnable)
         handler.removeCallbacks(arrivalRunnable)
+        handler.removeCallbacks(srFailureRestartRunnable)
     }
 
     // === 工具 ===

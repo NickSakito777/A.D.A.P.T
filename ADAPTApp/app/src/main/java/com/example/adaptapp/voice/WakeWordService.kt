@@ -13,6 +13,7 @@ import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
 import androidx.core.content.ContextCompat
 import java.nio.FloatBuffer
+import kotlin.random.Random
 
 // openWakeWord 唤醒词检测服务（ONNX Runtime）
 // Wake word detection using openWakeWord ONNX models
@@ -45,8 +46,8 @@ class WakeWordService(private val context: Context) {
         private const val EMBED_DIM = 96
         private const val EMBED_WINDOW = 16     // 16 embeddings for detection
 
-        private const val THRESHOLD_HEY_ARM = 0.5f
-        private const val THRESHOLD_STOP = 0.85f
+        private const val THRESHOLD_HEY_ARM = 0.45f  // H1 实验：0.5 下多次贴边成功，降至 0.45 让隐形 miss 过阈值
+        private const val THRESHOLD_STOP = 0.85f     // 急停不降，假阳性代价大
         private const val COOLDOWN_MS = 2000L   // 检测后冷却 2s 防重复
     }
 
@@ -132,8 +133,10 @@ class WakeWordService(private val context: Context) {
 
         isRunning = true
         clearBuffers()
+        lastDetectionTime = 0L  // 防止 cooldown 跨 stop/start 延续
 
         thread = Thread({
+            warmUp()
             initAudioRecord()
             audioLoop()
             releaseAudioRecord()
@@ -232,6 +235,32 @@ class WakeWordService(private val context: Context) {
                 break
             }
         }
+    }
+
+    // Warm-start: 对齐官方 openWakeWord 的预填充策略
+    // 用 4s 合成随机音频（int16 范围 [-1000, 1000]）跑完整 mel+embedding 流水线，
+    // 让 melBuffer/embedBuffer 在真实 mic 打开前就处于可检测状态，避免首发 miss。
+    // 不跑 wwSessions 检测，避免随机噪声误触发。
+    private fun warmUp() {
+        val ortEnv = env ?: return
+        val t0 = System.currentTimeMillis()
+        val numChunks = (SAMPLE_RATE * 4) / FRAME_SIZE  // 4 seconds worth of chunks
+        val chunk = FloatArray(FRAME_SIZE)
+        for (i in 0 until numChunks) {
+            for (j in 0 until FRAME_SIZE) {
+                chunk[j] = Random.nextInt(-1000, 1001).toFloat()  // mel 模型吃 int16 范围
+            }
+            val melFrames = runMelSpec(ortEnv, chunk) ?: break
+            for (frame in melFrames) melBuffer.addLast(frame)
+            while (melBuffer.size > MEL_WINDOW) melBuffer.removeFirst()
+            if (melBuffer.size >= MEL_WINDOW) {
+                val embedding = runEmbedding(ortEnv) ?: break
+                embedBuffer.addLast(embedding)
+                while (embedBuffer.size > EMBED_WINDOW) embedBuffer.removeFirst()
+            }
+        }
+        val duration = System.currentTimeMillis() - t0
+        Log.i(TAG, "warmUp: ${duration}ms, melBuffer=${melBuffer.size}, embedBuffer=${embedBuffer.size}")
     }
 
     // === ONNX 推理 ===
