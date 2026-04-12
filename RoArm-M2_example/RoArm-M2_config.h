@@ -79,7 +79,7 @@ bool runNewJsonCmd = false;
 #define ARM_SERVO_MIDDLE_ANGLE 180
 #define ARM_SERVO_POS_RANGE   4096
 #define ARM_SERVO_ANGLE_RANGE  360
-#define ARM_SERVO_INIT_SPEED   600
+#define ARM_SERVO_INIT_SPEED   400
 #define ARM_SERVO_INIT_ACC      20
 
 // GRIPPER init position correction (ID 15)
@@ -223,6 +223,17 @@ bool RoArmM2_emergencyStopFlag = false;
 bool newCmdReceived = false;
 bool RoArmM2_abortMotion = false;
 bool RoArmM2_inBlockingMove = false;
+
+// Motion supervisor (phase B1)
+// - motionGeneration invalidates stale blocking motion contexts
+// - estopState tracks the high-level stop mode without replacing existing
+//   torque / gate flags yet
+volatile uint16_t motionGeneration = 0;
+enum EstopState {
+  ESTOP_NORMAL = 0,
+  ESTOP_STOP_ACTIVE = 1,
+};
+volatile EstopState estopState = ESTOP_NORMAL;
 
 bool nanIK;
 

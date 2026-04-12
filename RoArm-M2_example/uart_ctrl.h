@@ -37,11 +37,14 @@ void jsonCmdReceiveHandler(){
 	switch(cmdType){
 	// emergency stop.
 	case CMD_EMERGENCY_STOP:
+												++motionGeneration;
+												estopState = ESTOP_STOP_ACTIVE;
 												RoArmM2_emergencyStopFlag = true;
 												RoArmM2_abortMotion = true;
 												emergencyStopProcessing();
 												break;
 	case CMD_RESET_EMERGENCY: 
+												estopState = ESTOP_NORMAL;
 												RoArmM2_emergencyStopFlag = false;
 												RoArmM2_abortMotion = false;
 												break;
@@ -58,17 +61,21 @@ void jsonCmdReceiveHandler(){
 												);break;
 
 
-	// it moves to goal position directly
-	// with interpolation.
-	case CMD_MOVE_INIT:		if (!RoArmM2_inBlockingMove) { RoArmM2_moveInit(); } break;
-	case CMD_SINGLE_JOINT_CTRL: 
+		// it moves to goal position directly
+		// with interpolation.
+		case CMD_MOVE_INIT:		if (!RoArmM2_inBlockingMove) { RoArmM2_moveInit(); } break;
+		case CMD_SINGLE_JOINT_CTRL: 
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_singleJointAbsCtrl(
 												jsonCmdReceive["joint"],
 												jsonCmdReceive["rad"],
 												jsonCmdReceive["spd"],
 												jsonCmdReceive["acc"]
 												);break;
-	case CMD_JOINTS_RAD_CTRL:
+		case CMD_JOINTS_RAD_CTRL:
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_allJointAbsCtrl(
 												jsonCmdReceive["base"],
 												jsonCmdReceive["shoulder"],
@@ -77,7 +84,9 @@ void jsonCmdReceiveHandler(){
 												jsonCmdReceive["spd"],
 												jsonCmdReceive["acc"]
 												);break;
-	case CMD_JOINTS_RAD_CTRL_DIRECT:
+		case CMD_JOINTS_RAD_CTRL_DIRECT:
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_allJointAbsCtrlDirect(
 												jsonCmdReceive["base"],
 												jsonCmdReceive["shoulder"],
@@ -98,9 +107,11 @@ void jsonCmdReceiveHandler(){
 											  jsonCmdReceive["y"],
 											  jsonCmdReceive["z"],
 											  jsonCmdReceive["t"],
-											  jsonCmdReceive["spd"]
-											  );break;
-	case CMD_XYZT_DIRECT_CTRL:
+												jsonCmdReceive["spd"]
+												);break;
+		case CMD_XYZT_DIRECT_CTRL:
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_baseCoordinateCtrl(
 												jsonCmdReceive["x"],
 												jsonCmdReceive["y"],
@@ -113,7 +124,9 @@ void jsonCmdReceiveHandler(){
 												RoArmM2_infoFeedback();
 												break;
 
-	case CMD_EOAT_HAND_CTRL: 
+		case CMD_EOAT_HAND_CTRL: 
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_handJointCtrlRad(1,
 												jsonCmdReceive["cmd"],
 												jsonCmdReceive["spd"],
@@ -156,14 +169,18 @@ void jsonCmdReceiveHandler(){
 												jsonCmdReceive["led"]
 												);break;
 	case CMD_SWITCH_OFF:  switchEmergencyStop();break;
-	case CMD_SINGLE_JOINT_ANGLE:
+		case CMD_SINGLE_JOINT_ANGLE:
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_singleJointAngleCtrl(
 												jsonCmdReceive["joint"],
 												jsonCmdReceive["angle"],
 												jsonCmdReceive["spd"],
 												jsonCmdReceive["acc"]
 												);break;
-	case CMD_JOINTS_ANGLE_CTRL:
+		case CMD_JOINTS_ANGLE_CTRL:
+												RoArmM2_abortMotion = false;
+												++motionGeneration;
 												RoArmM2_allJointsAngleCtrl(
 												jsonCmdReceive["b"],
 												jsonCmdReceive["s"],
@@ -228,11 +245,13 @@ void jsonCmdReceiveHandler(){
 												);break;
 
 
-	case CMD_TORQUE_CTRL: servoTorqueCtrl(254,
+		case CMD_TORQUE_CTRL: servoTorqueCtrl(254,
 												jsonCmdReceive["cmd"]);
 												RoArmM2_torqueLock = jsonCmdReceive["cmd"];
 												if (!RoArmM2_torqueLock) {
-													RoArmM2_abortMotion = true;
+													++motionGeneration;
+													// motionYield() already checks !torqueLock,
+													// so abortMotion is not needed here.
 												} else {
 													RoArmM2_abortMotion = false;
 												}

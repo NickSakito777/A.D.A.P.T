@@ -22,7 +22,7 @@ class ArmController(var connection: ConnectionManager) {
         private set
 
     // 移动到指定位置（T:102 最短路径 + T:700 Roll + T:703 Tilt）
-    fun moveTo(position: ArmPosition, speed: Int = 0, acc: Int = 10) {
+    fun moveTo(position: ArmPosition, speed: Int = 400, acc: Int = 10) {
         // 臂关节同步移动
         send("""{"T":102,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
 

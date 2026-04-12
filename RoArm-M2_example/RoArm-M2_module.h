@@ -211,28 +211,69 @@ void emergencyStopProcessing() {
   st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
 }
 
+uint16_t beginMotionGeneration() {
+  RoArmM2_abortMotion = false;
+  return ++motionGeneration;
+}
+
+bool motionYield(uint16_t myGeneration) {
+  serialCtrl();
+  return myGeneration == motionGeneration &&
+         !RoArmM2_emergencyStopFlag &&
+         !RoArmM2_abortMotion &&
+         RoArmM2_torqueLock;
+}
+
+bool motionDelayMs(unsigned long waitMs, uint16_t myGeneration,
+                   unsigned long sliceMs = 10) {
+  unsigned long startMs = millis();
+  while (millis() - startMs < waitMs) {
+    if (!motionYield(myGeneration)) {
+      return false;
+    }
+    unsigned long elapsed = millis() - startMs;
+    unsigned long remaining = waitMs - elapsed;
+    delay(remaining < sliceMs ? remaining : sliceMs);
+  }
+  return true;
+}
+
+// Legacy helper kept for paths that are not generation-aware yet.
 bool shouldAbortMotionNow() {
   return RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock;
 }
 
 // position check.
 // it will wait for the servo to move to the goal position.
-void waitMove2Goal(byte InputID, s16 goalPosition, s16 offSet) {
+// timeoutMs: max wait time (default 8s). Returns false on timeout.
+bool waitMove2Goal(byte InputID, s16 goalPosition, s16 offSet,
+                   uint16_t myGeneration, unsigned long timeoutMs = 8000) {
+  unsigned long startMs = millis();
   while (servoFeedback[InputID - 11].pos < goalPosition - offSet ||
          servoFeedback[InputID - 11].pos > goalPosition + offSet) {
-    serialCtrl();
-    if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag ||
-        !RoArmM2_torqueLock) {
-      break;
+    if (!motionYield(myGeneration)) {
+      return false;
+    }
+    if (millis() - startMs > timeoutMs) {
+      if (InfoPrint == 1) {
+        Serial.print("waitMove2Goal TIMEOUT: ID ");
+        Serial.print(InputID);
+        Serial.print(" pos=");
+        Serial.print(servoFeedback[InputID - 11].pos);
+        Serial.print(" goal=");
+        Serial.println(goalPosition);
+      }
+      return false;
     }
     if (!servoFeedback[InputID - 11].status) {
       servoTorqueCtrl(254, 0);
       RoArmM2_abortMotion = true;
-      break;
+      return false;
     }
     getFeedback(InputID, true);
     delay(10);
   }
+  return true;
 }
 
 // initialize bus servo libraris and uart2ttl.
@@ -295,6 +336,7 @@ void RoArmM2_moveInit() {
   }
 
   RoArmM2_inBlockingMove = true;
+  uint16_t myGeneration = beginMotionGeneration();
 
   // move BASE_SERVO to middle position.
   if (InfoPrint == 1) {
@@ -320,15 +362,14 @@ void RoArmM2_moveInit() {
   if (InfoPrint == 1) {
     Serial.println("...");
   }
-  waitMove2Goal(SHOULDER_DRIVING_SERVO_ID, ARM_SERVO_MIDDLE_POS, 30);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!waitMove2Goal(SHOULDER_DRIVING_SERVO_ID, ARM_SERVO_MIDDLE_POS, 60,
+                     myGeneration)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
 
   // wait for the jitter to go away.
-  delay(1200);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!motionDelayMs(1200, myGeneration)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
@@ -344,8 +385,7 @@ void RoArmM2_moveInit() {
     Serial.println("SHOULDER_DRIVEN_SERVO starts producing torque.");
   }
   servoTorqueCtrl(SHOULDER_DRIVEN_SERVO_ID, 1);
-  delay(10);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!motionDelayMs(10, myGeneration, 5)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
@@ -362,8 +402,8 @@ void RoArmM2_moveInit() {
   }
   st.WritePosEx(ELBOW_DRIVING_SERVO_ID, ARM_SERVO_MIDDLE_POS,
                 ARM_SERVO_INIT_SPEED, ARM_SERVO_INIT_ACC);
-  waitMove2Goal(ELBOW_DRIVING_SERVO_ID, ARM_SERVO_MIDDLE_POS, 20);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!waitMove2Goal(ELBOW_DRIVING_SERVO_ID, ARM_SERVO_MIDDLE_POS, 50,
+                     myGeneration)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
@@ -372,8 +412,7 @@ void RoArmM2_moveInit() {
   if (InfoPrint == 1) {
     Serial.println("...");
   }
-  delay(1200);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!motionDelayMs(1200, myGeneration)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
@@ -389,8 +428,7 @@ void RoArmM2_moveInit() {
     Serial.println("ELBOW_DRIVEN_SERVO starts producing torque.");
   }
   servoTorqueCtrl(ELBOW_DRIVEN_SERVO_ID, 1);
-  delay(10);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!motionDelayMs(10, myGeneration, 5)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
@@ -403,13 +441,15 @@ void RoArmM2_moveInit() {
       calculatePosByRad(GRIPPER_INIT_OFFSET_RAD) + ARM_SERVO_MIDDLE_POS;
   st.WritePosEx(GRIPPER_SERVO_ID, gripperInitPos, ARM_SERVO_INIT_SPEED,
                 ARM_SERVO_INIT_ACC);
-  waitMove2Goal(GRIPPER_SERVO_ID, gripperInitPos, 20);
-  if (RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock) {
+  if (!waitMove2Goal(GRIPPER_SERVO_ID, gripperInitPos, 20, myGeneration)) {
     RoArmM2_inBlockingMove = false;
     return;
   }
 
-  delay(1000);
+  if (!motionDelayMs(1000, myGeneration)) {
+    RoArmM2_inBlockingMove = false;
+    return;
+  }
   RoArmM2_inBlockingMove = false;
 }
 
@@ -616,26 +656,40 @@ void RoArmM2_dynamicAdaptation(byte inputM, int inputB, int inputS, int inputE,
 //              |
 //          -180 180
 void setNewAxisX(double angleInput) {
+  uint16_t myGeneration = beginMotionGeneration();
   double radInput = (angleInput / 180) * M_PI;
   RoArmM2_shoulderJointCtrlRad(1, 0, 500, 20);
-  waitMove2Goal(SHOULDER_DRIVING_SERVO_ID, goalPos[1], 20);
+  if (!waitMove2Goal(SHOULDER_DRIVING_SERVO_ID, goalPos[1], 20,
+                     myGeneration)) {
+    return;
+  }
 
   RoArmM2_elbowJointCtrlRad(1, 0, 500, 20);
-  waitMove2Goal(ELBOW_DRIVING_SERVO_ID, goalPos[3], 20);
+  if (!waitMove2Goal(ELBOW_DRIVING_SERVO_ID, goalPos[3], 20, myGeneration)) {
+    return;
+  }
 
   RoArmM2_baseJointCtrlRad(1, 0, 500, 20);
-  waitMove2Goal(BASE_SERVO_ID, goalPos[0], 20);
+  if (!waitMove2Goal(BASE_SERVO_ID, goalPos[0], 20, myGeneration)) {
+    return;
+  }
 
-  delay(1000);
+  if (!motionDelayMs(1000, myGeneration)) {
+    return;
+  }
 
   RoArmM2_baseJointCtrlRad(1, -radInput, 500, 20);
-  waitMove2Goal(BASE_SERVO_ID, goalPos[0], 20);
+  if (!waitMove2Goal(BASE_SERVO_ID, goalPos[0], 20, myGeneration)) {
+    return;
+  }
 
-  delay(1000);
+  if (!motionDelayMs(1000, myGeneration)) {
+    return;
+  }
 
   setMiddlePos(BASE_SERVO_ID);
 
-  delay(5);
+  motionDelayMs(5, myGeneration, 5);
 }
 
 // Simple Linkage IK:
@@ -1055,7 +1109,7 @@ double maxNumInArray() {
 }
 
 // use this function to move the end of the arm to the goal position.
-void RoArmM2_movePosGoalfromLast(float spdInput) {
+void RoArmM2_movePosGoalfromLast(float spdInput, uint16_t myGeneration) {
   double deltaSteps = maxNumInArray();
 
   double bufferX;
@@ -1073,9 +1127,20 @@ void RoArmM2_movePosGoalfromLast(float spdInput) {
   bufferLastZ = lastZ;
   bufferLastT = lastT;
 
+  if (deltaSteps <= 0) {
+    if (!motionYield(myGeneration)) {
+      return;
+    }
+    RoArmM2_baseCoordinateCtrl(goalX, goalY, goalZ, goalT);
+    if (!nanIK) {
+      RoArmM2_goalPosMove();
+      RoArmM2_lastPosUpdate();
+    }
+    return;
+  }
+
   for (double i = 0; i <= 1; i += (1 / (deltaSteps * 1)) * spdInput) {
-    serialCtrl();
-    if (shouldAbortMotionNow()) {
+    if (!motionYield(myGeneration)) {
       goalX = bufferLastX;
       goalY = bufferLastY;
       goalZ = bufferLastZ;
@@ -1108,8 +1173,7 @@ void RoArmM2_movePosGoalfromLast(float spdInput) {
     RoArmM2_goalPosMove();
     delay(2);
   }
-  serialCtrl();
-  if (shouldAbortMotionNow()) {
+  if (!motionYield(myGeneration)) {
     goalX = bufferLastX;
     goalY = bufferLastY;
     goalZ = bufferLastZ;
@@ -1135,6 +1199,7 @@ void RoArmM2_movePosGoalfromLast(float spdInput) {
 // default inputSpd = 0.25
 void RoArmM2_singlePosAbsBesselCtrl(byte axiInput, double posInput,
                                     double inputSpd) {
+  uint16_t myGeneration = beginMotionGeneration();
   switch (axiInput) {
   case 1:
     goalX = posInput;
@@ -1149,7 +1214,7 @@ void RoArmM2_singlePosAbsBesselCtrl(byte axiInput, double posInput,
     goalT = posInput;
     break;
   }
-  RoArmM2_movePosGoalfromLast(inputSpd);
+  RoArmM2_movePosGoalfromLast(inputSpd, myGeneration);
 }
 
 // ctrl all axis abs position.
@@ -1160,11 +1225,12 @@ void RoArmM2_singlePosAbsBesselCtrl(byte axiInput, double posInput,
 // default inputSpd = 0.36
 void RoArmM2_allPosAbsBesselCtrl(double inputX, double inputY, double inputZ,
                                  double inputT, double inputSpd) {
+  uint16_t myGeneration = beginMotionGeneration();
   goalX = inputX;
   goalY = inputY;
   goalZ = inputZ;
   goalT = inputT;
-  RoArmM2_movePosGoalfromLast(inputSpd);
+  RoArmM2_movePosGoalfromLast(inputSpd, myGeneration);
 }
 
 // ChatGPT prompt:
@@ -1607,6 +1673,8 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
     return;
   }
 
+  uint16_t myGeneration = beginMotionGeneration();
+
   // Wheel Mode P-controller 最短路径旋转
   // ST3215 position mode 无法保证最短路径，会绕远路
   st.WheelMode(END_EFFECTOR_SERVO_ID);
@@ -1623,8 +1691,7 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   unsigned long timeout = 5000;
 
   while (millis() - startTime < timeout) {
-    serialCtrl();
-    if (shouldAbortMotionNow()) {
+    if (!motionYield(myGeneration)) {
       st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
       return;
     }
@@ -1711,6 +1778,8 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
     return;
   }
 
+  uint16_t myGeneration = beginMotionGeneration();
+
   // Determine sides for direction logic
   // Side A: 0°~106° (pos 0~1206)   Side B: 284°~360° (pos 3231~4095)
   bool tgtSideA = (targetPos <= PHONE_TILT_POS_A);
@@ -1732,8 +1801,7 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   unsigned long timeout = 5000; // 5 seconds max
 
   while (millis() - startTime < timeout) {
-    serialCtrl();
-    if (shouldAbortMotionNow()) {
+    if (!motionYield(myGeneration)) {
       st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
       return;
     }
