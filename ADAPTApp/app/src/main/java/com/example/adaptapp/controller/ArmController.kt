@@ -2,6 +2,9 @@ package com.example.adaptapp.controller
 
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.model.ArmPosition
@@ -11,6 +14,12 @@ import org.json.JSONObject
 class ArmController(var connection: ConnectionManager) {
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // Stop latch — emergencyStop() 置 true，之后 send() 拦截所有普通命令
+    // 只有显式调用 resetStop() 才能解除（当前不接入任何 UI 自动调用）
+    // 未来状态扩展预留：STOP_ACTIVE / RECOVERING / SAFE_REACHED_WAITING_RESUME / NORMAL
+    var isStopped: Boolean by mutableStateOf(false)
+        private set
 
     // 移动到指定位置（T:102 最短路径 + T:700 Roll + T:703 Tilt）
     fun moveTo(position: ArmPosition, speed: Int = 0, acc: Int = 10) {
@@ -33,16 +42,19 @@ class ArmController(var connection: ConnectionManager) {
         send("""{"T":120,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
     }
 
-    // 急停：停止运动 → 锁扭矩 → 4s 后移到 safe position（如有）
-    fun emergencyStop(safePosition: ArmPosition? = null) {
+    // 急停：设 stop latch → 清定时任务 → forced 发 T:0
+    // 不发 T:210，不做 safe-position 定时器
+    // 恢复只能通过 resetStop()（当前未接入任何 UI）
+    fun emergencyStop() {
+        isStopped = true
         handler.removeCallbacksAndMessages(ESTOP_TOKEN)
-        send("""{"T":0}""")
-        setTorque(true)
-        if (safePosition != null) {
-            handler.postDelayed({
-                moveTo(safePosition)
-            }, ESTOP_TOKEN, 4000)
-        }
+        sendForced("""{"T":0}""")
+    }
+
+    // 显式解除 stop latch — 当前不接线到任何 UI / 自动逻辑
+    // 未来应在收到固件 SAFE_REACHED 回报后才允许调用
+    fun resetStop() {
+        isStopped = false
     }
 
     // 读取当前关节反馈（T:105 → ESP32 返回 T:1051）
@@ -102,6 +114,14 @@ class ArmController(var connection: ConnectionManager) {
     }
 
     private fun send(json: String) {
+        if (isStopped) return
+        if (connection.connectionState.value == ConnectionState.CONNECTED) {
+            connection.send(json)
+        }
+    }
+
+    // 仅供 emergencyStop() 内部使用，绕过 stop latch
+    private fun sendForced(json: String) {
         if (connection.connectionState.value == ConnectionState.CONNECTED) {
             connection.send(json)
         }

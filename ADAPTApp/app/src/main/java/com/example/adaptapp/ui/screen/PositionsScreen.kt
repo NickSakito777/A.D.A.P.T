@@ -155,7 +155,7 @@ fun PositionsScreen(
                     PositionCard(
                         position = pos,
                         onTap = {
-                            if (isConnected && voiceState?.status != VoiceStatus.EXECUTING)
+                            if (isConnected && !controller.isStopped && voiceState?.status != VoiceStatus.EXECUTING)
                                 confirmTarget = pos
                         },
                         onEdit = { editTarget = pos },
@@ -176,7 +176,7 @@ fun PositionsScreen(
                 modifier = Modifier
                     .weight(1f)
                     .height(64.dp)
-                    .clickable(enabled = isConnected && voiceState?.status != VoiceStatus.EXECUTING && safePosition != null) {
+                    .clickable(enabled = isConnected && !controller.isStopped && voiceState?.status != VoiceStatus.EXECUTING && safePosition != null) {
                         safePosition?.let { confirmTarget = it }
                     },
                 shape = RoundedCornerShape(8.dp),
@@ -200,8 +200,9 @@ fun PositionsScreen(
             Spacer(modifier = Modifier.width(8.dp))
             IconButton(
                 onClick = {
-                    if (isConnected) onEnterSetup()
-                    else Toast.makeText(context, "Please connect to the arm first", Toast.LENGTH_SHORT).show()
+                    if (!isConnected) Toast.makeText(context, "Please connect to the arm first", Toast.LENGTH_SHORT).show()
+                    else if (controller.isStopped) Toast.makeText(context, "Emergency stop active", Toast.LENGTH_SHORT).show()
+                    else onEnterSetup()
                 },
                 modifier = Modifier
                     .size(56.dp)
@@ -217,7 +218,7 @@ fun PositionsScreen(
         // 6. Add button
         OutlinedButton(
             onClick = onEnterSetup,
-            enabled = isConnected,
+            enabled = isConnected && !controller.isStopped,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(56.dp),
@@ -232,7 +233,7 @@ fun PositionsScreen(
 
         // 7. Emergency Stop
         EmergencyStopButton(
-            onStop = { controller.emergencyStop(positions.find { it.isSafe }) },
+            onStop = { controller.emergencyStop() },
             modifier = Modifier.padding(bottom = 16.dp)
         )
     }
@@ -242,6 +243,10 @@ fun PositionsScreen(
         ConfirmMoveDialog(
             positionName = target.name,
             onConfirm = {
+                if (controller.isStopped) {
+                    confirmTarget = null
+                    return@ConfirmMoveDialog
+                }
                 if (positions.none { it.isSafe }) {
                     Toast.makeText(context, "Please define a safe position first", Toast.LENGTH_SHORT).show()
                 } else {

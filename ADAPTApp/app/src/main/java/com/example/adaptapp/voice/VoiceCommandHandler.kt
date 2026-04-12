@@ -98,8 +98,10 @@ class VoiceCommandHandler(
     }
 
     // 进入 Recall Mode — 启动语音系统
+    // 如果 ArmController 处于 stop 状态，拒绝恢复，防止页面切换意外重启语音
     fun resume() {
         handler.post {
+            if (armController.isStopped) return@post
             srFailureCount = 0
             setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
             onWakeWordStart?.invoke()
@@ -320,11 +322,13 @@ class VoiceCommandHandler(
         cancelAllTimers()
         stopSpeechRecognizer()
         feedback.stop()
-        armController.emergencyStop(positionRepository.getAll().find { it.isSafe })
+        armController.emergencyStop()
         pendingAction = null
         pendingCandidates = null
         srFailureCount = 0
-        returnToIdle()
+        // stop 后不回 IDLE — 进入 PAUSED 并停掉 wake word，语音系统完全沉默
+        onWakeWordStop?.invoke()
+        setState(VoiceStatus.PAUSED, "Emergency stop")
         feedback.speak("Emergency stop activated")
     }
 

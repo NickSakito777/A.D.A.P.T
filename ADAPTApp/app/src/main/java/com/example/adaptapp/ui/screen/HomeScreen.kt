@@ -69,7 +69,7 @@ fun HomeScreen(
     }
     val safePosition = remember(allPositions) { allPositions.find { it.isSafe } }
 
-    val canTap = isConnected && voiceState?.status != VoiceStatus.EXECUTING
+    val canTap = isConnected && !controller.isStopped && voiceState?.status != VoiceStatus.EXECUTING
 
     Column(
         modifier = Modifier
@@ -175,27 +175,33 @@ fun HomeScreen(
             if (recents.isEmpty()) {
                 Text("No recent positions", fontSize = 14.sp, color = AdaptGrayDark)
             } else {
-                recents.forEach { name ->
-                    val pos = allPositions.find { it.name == name }
-                    if (pos != null) {
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(64.dp)
-                                .clickable(enabled = canTap) { confirmTarget = pos },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = AdaptGray)
-                        ) {
-                            Text(
-                                pos.name,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = AdaptTextPrimary,
-                                modifier = Modifier.padding(16.dp)
-                            )
+                val recentPositions = recents.take(4).mapNotNull { name -> allPositions.find { it.name == name } }
+                for (row in recentPositions.chunked(2)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        row.forEach { pos ->
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(64.dp)
+                                    .clickable(enabled = canTap) { confirmTarget = pos },
+                                shape = RoundedCornerShape(12.dp),
+                                colors = CardDefaults.cardColors(containerColor = AdaptGray)
+                            ) {
+                                Text(
+                                    pos.name,
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = AdaptTextPrimary,
+                                    modifier = Modifier.padding(16.dp)
+                                )
+                            }
                         }
-                        Spacer(modifier = Modifier.height(8.dp))
+                        if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
                     }
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
             }
 
@@ -217,13 +223,6 @@ fun HomeScreen(
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("SAFE POSITION", fontSize = 12.sp, color = SafePurple)
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                safePosition.name,
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = SafePurple
-                            )
                         }
                     }
                 } else {
@@ -245,8 +244,9 @@ fun HomeScreen(
                 Spacer(modifier = Modifier.width(12.dp))
                 IconButton(
                     onClick = {
-                        if (isConnected) onEnterSetup()
-                        else Toast.makeText(context, "Please connect to the arm first", Toast.LENGTH_SHORT).show()
+                        if (!isConnected) Toast.makeText(context, "Please connect to the arm first", Toast.LENGTH_SHORT).show()
+                        else if (controller.isStopped) Toast.makeText(context, "Emergency stop active", Toast.LENGTH_SHORT).show()
+                        else onEnterSetup()
                     },
                     modifier = Modifier
                         .size(56.dp)
@@ -262,7 +262,7 @@ fun HomeScreen(
 
         // 7. Emergency Stop
         EmergencyStopButton(
-            onStop = { controller.emergencyStop(repository.getAll().find { it.isSafe }) },
+            onStop = { controller.emergencyStop() },
             modifier = Modifier.padding(bottom = 16.dp)
         )
     }
@@ -272,6 +272,10 @@ fun HomeScreen(
         ConfirmMoveDialog(
             positionName = target.name,
             onConfirm = {
+                if (controller.isStopped) {
+                    confirmTarget = null
+                    return@ConfirmMoveDialog
+                }
                 if (repository.getAll().none { it.isSafe }) {
                     Toast.makeText(context, "Please define a safe position first", Toast.LENGTH_SHORT).show()
                 } else {

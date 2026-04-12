@@ -7,8 +7,11 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
@@ -26,7 +29,6 @@ import com.example.adaptapp.connection.ConnectionMode
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.connection.UsbSerialManager
 import com.example.adaptapp.controller.ArmController
-import com.example.adaptapp.model.ArmPosition
 import com.example.adaptapp.repository.PositionRepository
 import com.example.adaptapp.ui.component.EmergencyStopButton
 import com.example.adaptapp.ui.screen.DebugScreen
@@ -127,10 +129,6 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val getSafePosition: () -> ArmPosition? = {
-                    positionRepository.getAll().find { it.isSafe }
-                }
-
                 val voiceState by voiceCommandHandler.voiceState.collectAsState()
                 var voiceEnabled by remember { mutableStateOf(true) }
                 LaunchedEffect(currentScreen, voiceEnabled) {
@@ -141,61 +139,68 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    gesturesEnabled = currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS,
-                    drawerContent = {
-                        DrawerContent(
-                            onNavigate = { screen ->
-                                currentScreen = screen
-                                scope.launch { drawerState.close() }
-                            },
-                            onClose = { scope.launch { drawerState.close() } },
-                            onEmergencyStop = { armController.emergencyStop(getSafePosition()) }
-                        )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    ModalNavigationDrawer(
+                        drawerState = drawerState,
+                        gesturesEnabled = !armController.isStopped &&
+                            (currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS),
+                        drawerContent = {
+                            DrawerContent(
+                                onNavigate = { screen ->
+                                    currentScreen = screen
+                                    scope.launch { drawerState.close() }
+                                },
+                                onClose = { scope.launch { drawerState.close() } },
+                                onEmergencyStop = { armController.emergencyStop() }
+                            )
+                        }
+                    ) {
+                        when (currentScreen) {
+                            Screen.HOME -> HomeScreen(
+                                connection = activeConnection,
+                                controller = armController,
+                                repository = positionRepository,
+                                currentMode = activeMode,
+                                onSwitchMode = onSwitchMode,
+                                onBtTap = onBtTap,
+                                voiceState = voiceState,
+                                voiceEnabled = voiceEnabled,
+                                onVoiceToggle = { voiceEnabled = it },
+                                onEnterSetup = { currentScreen = Screen.SETUP },
+                                onOpenDrawer = { scope.launch { drawerState.open() } }
+                            )
+                            Screen.POSITIONS -> PositionsScreen(
+                                connection = activeConnection,
+                                controller = armController,
+                                repository = positionRepository,
+                                currentMode = activeMode,
+                                onSwitchMode = onSwitchMode,
+                                onBtTap = onBtTap,
+                                voiceState = voiceState,
+                                voiceEnabled = voiceEnabled,
+                                onVoiceToggle = { voiceEnabled = it },
+                                onEnterSetup = { currentScreen = Screen.SETUP },
+                                onOpenDebug = { currentScreen = Screen.DEBUG },
+                                onOpenDrawer = { scope.launch { drawerState.open() } }
+                            )
+                            Screen.SETUP -> SetupScreen(
+                                connection = activeConnection,
+                                controller = armController,
+                                repository = positionRepository,
+                                onExit = { currentScreen = Screen.POSITIONS }
+                            )
+                            Screen.DEBUG -> DebugScreen(
+                                connection = activeConnection,
+                                btManager = btManager,
+                                currentMode = activeMode,
+                                onSwitchMode = onSwitchMode,
+                                onBack = { currentScreen = Screen.POSITIONS }
+                            )
+                        }
                     }
-                ) {
-                    when (currentScreen) {
-                        Screen.HOME -> HomeScreen(
-                            connection = activeConnection,
-                            controller = armController,
-                            repository = positionRepository,
-                            currentMode = activeMode,
-                            onSwitchMode = onSwitchMode,
-                            onBtTap = onBtTap,
-                            voiceState = voiceState,
-                            voiceEnabled = voiceEnabled,
-                            onVoiceToggle = { voiceEnabled = it },
-                            onEnterSetup = { currentScreen = Screen.SETUP },
-                            onOpenDrawer = { scope.launch { drawerState.open() } }
-                        )
-                        Screen.POSITIONS -> PositionsScreen(
-                            connection = activeConnection,
-                            controller = armController,
-                            repository = positionRepository,
-                            currentMode = activeMode,
-                            onSwitchMode = onSwitchMode,
-                            onBtTap = onBtTap,
-                            voiceState = voiceState,
-                            voiceEnabled = voiceEnabled,
-                            onVoiceToggle = { voiceEnabled = it },
-                            onEnterSetup = { currentScreen = Screen.SETUP },
-                            onOpenDebug = { currentScreen = Screen.DEBUG },
-                            onOpenDrawer = { scope.launch { drawerState.open() } }
-                        )
-                        Screen.SETUP -> SetupScreen(
-                            connection = activeConnection,
-                            controller = armController,
-                            repository = positionRepository,
-                            onExit = { currentScreen = Screen.POSITIONS }
-                        )
-                        Screen.DEBUG -> DebugScreen(
-                            connection = activeConnection,
-                            btManager = btManager,
-                            currentMode = activeMode,
-                            onSwitchMode = onSwitchMode,
-                            onBack = { currentScreen = Screen.POSITIONS }
-                        )
+
+                    if (armController.isStopped) {
+                        StopActiveOverlay()
                     }
                 }
 
@@ -284,4 +289,65 @@ private fun DrawerItem(label: String, onClick: () -> Unit) {
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp)
     )
+}
+
+@Composable
+private fun StopActiveOverlay() {
+    val interactionSource = remember { MutableInteractionSource() }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x99000000))
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {}
+            )
+            .padding(24.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(
+                    "Emergency Stop Active",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = AdaptTextPrimary
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    "Motion disabled",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFD32F2F)
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    "Voice disabled",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color(0xFFD32F2F)
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "Do not touch or move the arm unless instructed.",
+                    fontSize = 15.sp,
+                    color = AdaptGrayDark
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "Controls stay locked in this build until you restart the app or connect a future recovery flow.",
+                    fontSize = 14.sp,
+                    color = AdaptGrayDark
+                )
+            }
+        }
+    }
 }

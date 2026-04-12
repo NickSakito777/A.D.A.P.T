@@ -335,9 +335,10 @@ fun SetupScreen(
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Emergency stop
+        // Emergency stop — 触发后直接退出页面，避免 coroutine / UI 状态悬挂
         EmergencyStopButton(onStop = {
-            controller.emergencyStop(repository.getAll().find { it.isSafe })
+            controller.emergencyStop()
+            onExit()
         })
     }
 }

@@ -37,7 +37,7 @@ fun DebugScreen(
     val connected = connectionState == ConnectionState.CONNECTED
     var showBtPicker by remember { mutableStateOf(false) }
 
-    // 发送命令的辅助函数
+    // DEBUG BYPASS: direct connection.send(), not gated by ArmController stop latch
     fun sendCmd(label: String, json: String) {
         logMessages.add(">>> [$label] $json")
         connection.send(json)
