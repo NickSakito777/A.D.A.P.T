@@ -194,21 +194,50 @@ void holdCurrentArmPose() {
   }
 }
 
-// Emergency stop now keeps torque enabled and freezes the current pose.
+// Emergency stop: two-phase brake.
+// Phase 1 (~12ms): quick-read current position from each servo (ReadPos only,
+//   2 bytes per servo), then SyncWritePosEx to hold at CURRENT position.
+//   NOTE: speed=0 in ST3215 position mode means UNLIMITED speed, NOT stop.
+//   So we write speed=1 (slowest) to freeze the servo near its current pos.
+// Phase 2: phone axes wheel-mode stop + full feedback read for clean hold.
 void emergencyStopProcessing() {
   RoArmM2_torqueLock = true;
   servoTorqueCtrl(254, 1);
   stopConstantMotionCommands();
 
+  // --- Phase 1: quick position read + immediate hold ---
+  // ReadPos is ~2ms per servo (2 bytes only), much faster than full getFeedback
+  bool allRead = true;
+  for (int i = 0; i < 6; i++) {
+    int pos = st.ReadPos(servoID[i]);
+    if (pos != -1) {
+      goalPos[i] = (s16)pos;
+    } else {
+      allRead = false;  // keep old goalPos for this servo
+    }
+  }
+  for (int i = 0; i < 6; i++) {
+    moveSpd[i] = 1;     // speed=1 = slowest possible (NOT 0, which = max speed)
+    moveAcc[i] = 254;   // max acc = instant deceleration
+  }
+  st.SyncWritePosEx(servoID, 6, goalPos, moveSpd, moveAcc);
+
+  // Phone axes (wheel mode): speed=0 means stop in wheel mode
+  st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
+  st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
+
+  // --- Phase 2: full feedback read for clean hold ---
   if (refreshEmergencyHoldFeedback()) {
     holdCurrentArmPose();
   } else if (InfoPrint == 1) {
-    Serial.println("Emergency stop: failed to read full arm feedback, torque held without pose refresh.");
+    Serial.println("Emergency stop: phase 2 feedback read failed, phase 1 hold active.");
   }
 
-  // Best-effort stop for the two wheel-mode phone axes while keeping torque.
-  st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
-  st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
+  // Restore moveAcc to default
+  for (int i = 0; i < 6; i++) {
+    moveSpd[i] = 0;
+    moveAcc[i] = ARM_SERVO_INIT_ACC;
+  }
 }
 
 uint16_t beginMotionGeneration() {
@@ -1660,8 +1689,15 @@ double endEffectorPosToDegrees(int pos) {
   return (pos * 360.0) / ARM_SERVO_POS_RANGE;
 }
 
+// Reentrancy guards — prevent nested P-controller calls via serialCtrl
+static bool _endEffectorBusy = false;
+static bool _phoneTiltBusy = false;
+
 // 第6个舵机控制函数 — Wheel Mode P-controller 最短路径
 void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
+  if (_endEffectorBusy) return;  // already running — skip to avoid nesting
+  _endEffectorBusy = true;
+
   // 归一化 0~360 / Normalize to 0~360
   while (angleDegrees < 0) angleDegrees += 360.0;
   while (angleDegrees >= 360) angleDegrees -= 360.0;
@@ -1670,6 +1706,7 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   int curPos = endEffectorGetPosition();
   if (curPos < 0) {
     if (InfoPrint == 1) Serial.println("EndEffector: cannot read position");
+    _endEffectorBusy = false;
     return;
   }
 
@@ -1693,6 +1730,7 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   while (millis() - startTime < timeout) {
     if (!motionYield(myGeneration)) {
       st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
+      _endEffectorBusy = false;
       return;
     }
     int nowPos = endEffectorGetPosition();
@@ -1724,6 +1762,7 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
     Serial.print("° → pos:");
     Serial.println(targetPos);
   }
+  _endEffectorBusy = false;
 }
 
 // 快捷函数
@@ -1750,6 +1789,9 @@ int phoneTiltGetPosition() {
 // remembers old goal). Solution: use Wheel Mode with P-controller for ALL
 // tilt movements. Never use position mode for ID17.
 void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
+  if (_phoneTiltBusy) return;  // already running — skip to avoid nesting
+  _phoneTiltBusy = true;
+
   // Normalize to 0~360
   while (angleDegrees < 0)
     angleDegrees += 360.0;
@@ -1775,6 +1817,7 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   int curPos = phoneTiltGetPosition();
   if (curPos < 0) {
     if (InfoPrint == 1) Serial.println("PhoneTilt: cannot read position");
+    _phoneTiltBusy = false;
     return;
   }
 
@@ -1803,6 +1846,7 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   while (millis() - startTime < timeout) {
     if (!motionYield(myGeneration)) {
       st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
+      _phoneTiltBusy = false;
       return;
     }
     int nowPos = phoneTiltGetPosition();
@@ -1862,6 +1906,7 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
     delay(2000);
     servoTorqueCtrl(PHONE_TILT_SERVO_ID, 1);
   }
+  _phoneTiltBusy = false;
 }
 
 void phoneTiltUnlock() { servoTorqueCtrl(PHONE_TILT_SERVO_ID, 0); }

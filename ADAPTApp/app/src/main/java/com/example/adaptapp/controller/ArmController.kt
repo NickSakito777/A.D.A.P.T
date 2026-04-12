@@ -22,18 +22,26 @@ class ArmController(var connection: ConnectionManager) {
         private set
 
     // 移动到指定位置（T:102 最短路径 + T:700 Roll + T:703 Tilt）
+    // T:102 是 fire-and-forget（固件立即返回），T:700/T:703 是阻塞 P 控循环。
+    // 如果三条命令无间隔发出，T:700/T:703 会在固件里嵌套执行，导致 T:0 急停
+    // 无法及时打断。用 handler.post 把 phone 轴命令延后，确保 T:102 先被
+    // 主循环处理完、T:700 在主循环启动（而非嵌套在另一个 P 控里）。
     fun moveTo(position: ArmPosition, speed: Int = 400, acc: Int = 10) {
-        // 臂关节同步移动
+        // 臂关节同步移动（fire-and-forget）
         send("""{"T":102,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
 
-        // Phone Roll（如果有值）
+        // Phone Roll — 延后 50ms，等 T:102 被固件主循环处理
         position.p?.let { roll ->
-            send("""{"T":700,"angle":$roll}""")
+            handler.postDelayed({
+                if (!isStopped) send("""{"T":700,"angle":$roll}""")
+            }, 50)
         }
 
-        // Phone Tilt（如果有值）
+        // Phone Tilt — 再延后 50ms，避免 T:700 和 T:703 嵌套
         position.tilt?.let { tilt ->
-            send("""{"T":703,"angle":$tilt}""")
+            handler.postDelayed({
+                if (!isStopped) send("""{"T":703,"angle":$tilt}""")
+            }, 100)
         }
     }
 
