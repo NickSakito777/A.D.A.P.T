@@ -1,5 +1,39 @@
+bool isBlockedDuringEmergency(int cmdType) {
+	switch (cmdType) {
+	case CMD_MOVE_INIT:
+	case CMD_SINGLE_JOINT_CTRL:
+	case CMD_JOINTS_RAD_CTRL:
+	case CMD_JOINTS_RAD_CTRL_DIRECT:
+	case CMD_SINGLE_AXIS_CTRL:
+	case CMD_XYZT_GOAL_CTRL:
+	case CMD_XYZT_DIRECT_CTRL:
+	case CMD_EOAT_HAND_CTRL:
+	case CMD_EOAT_GRAB_TORQUE:
+	case CMD_SINGLE_JOINT_ANGLE:
+	case CMD_JOINTS_ANGLE_CTRL:
+	case CMD_CONSTANT_CTRL:
+	case CMD_TORQUE_CTRL:
+	case CMD_END_EFFECTOR_ROTATE:
+	case CMD_PHONE_MODE:
+	case CMD_PHONE_TORQUE:
+	case CMD_PHONE_TILT_ROTATE:
+	case CMD_PHONE_TILT_TORQUE:
+		return true;
+	default:
+		return false;
+	}
+}
+
 void jsonCmdReceiveHandler(){
 	int cmdType = jsonCmdReceive["T"].as<int>();
+	if (RoArmM2_emergencyStopFlag && cmdType != CMD_EMERGENCY_STOP &&
+		cmdType != CMD_RESET_EMERGENCY && isBlockedDuringEmergency(cmdType)) {
+		if (InfoPrint == 1) {
+			Serial.print("Emergency stop active, reject cmd: ");
+			Serial.println(cmdType);
+		}
+		return;
+	}
 	switch(cmdType){
 	// emergency stop.
 	case CMD_EMERGENCY_STOP:

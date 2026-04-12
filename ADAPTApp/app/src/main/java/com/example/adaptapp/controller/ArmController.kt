@@ -57,6 +57,17 @@ class ArmController(var connection: ConnectionManager) {
         isStopped = false
     }
 
+    // 测试恢复入口：先通知固件清除 emergency flag，再解除本地 stop latch
+    // 未来正式版本应由 SAFE_REACHED / Resume 流程统一调用
+    fun releaseEmergencyStop(): Boolean {
+        if (connection.connectionState.value != ConnectionState.CONNECTED) {
+            return false
+        }
+        sendForced("""{"T":999}""")
+        resetStop()
+        return true
+    }
+
     // 读取当前关节反馈（T:105 → ESP32 返回 T:1051）
     fun readFeedback() {
         send("""{"T":105}""")

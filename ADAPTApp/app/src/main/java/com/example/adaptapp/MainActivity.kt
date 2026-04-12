@@ -200,7 +200,25 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (armController.isStopped) {
-                        StopActiveOverlay()
+                        StopActiveOverlay(
+                            onResumeTest = {
+                                if (armController.releaseEmergencyStop()) {
+                                    if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) &&
+                                        voiceAvailable && voiceEnabled
+                                    ) {
+                                        voiceCommandHandler.resume()
+                                    } else {
+                                        voiceCommandHandler.pause()
+                                    }
+                                } else {
+                                    Toast.makeText(
+                                        this@MainActivity,
+                                        "Connection required to resume controls",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }
+                        )
                     }
                 }
 
@@ -292,7 +310,9 @@ private fun DrawerItem(label: String, onClick: () -> Unit) {
 }
 
 @Composable
-private fun StopActiveOverlay() {
+private fun StopActiveOverlay(
+    onResumeTest: () -> Unit
+) {
     val interactionSource = remember { MutableInteractionSource() }
 
     Box(
@@ -347,6 +367,10 @@ private fun StopActiveOverlay() {
                     fontSize = 14.sp,
                     color = AdaptGrayDark
                 )
+                Spacer(modifier = Modifier.height(20.dp))
+                Button(onClick = onResumeTest) {
+                    Text("Resume Controls (Test)")
+                }
             }
         }
     }

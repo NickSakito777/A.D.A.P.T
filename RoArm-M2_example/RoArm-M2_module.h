@@ -159,11 +159,60 @@ void servoTorqueCtrl(byte servoID, u8 enableCMD) {
 // input the ID of the servo that you wannna set middle position.
 void setMiddlePos(byte InputID) { st.CalibrationOfs(InputID); }
 
-// to release all servos' torque for 10s.
+void stopConstantMotionCommands() {
+  const_cmd_base_x = MOVE_STOP;
+  const_cmd_shoulder_y = MOVE_STOP;
+  const_cmd_elbow_z = MOVE_STOP;
+  const_cmd_eoat_t = MOVE_STOP;
+}
+
+bool refreshEmergencyHoldFeedback() {
+  return getFeedback(BASE_SERVO_ID, true) &&
+         getFeedback(SHOULDER_DRIVING_SERVO_ID, true) &&
+         getFeedback(SHOULDER_DRIVEN_SERVO_ID, true) &&
+         getFeedback(ELBOW_DRIVING_SERVO_ID, true) &&
+         getFeedback(ELBOW_DRIVEN_SERVO_ID, true) &&
+         getFeedback(GRIPPER_SERVO_ID, true);
+}
+
+void holdCurrentArmPose() {
+  goalPos[0] = servoFeedback[BASE_SERVO_ID - 11].pos;
+  goalPos[1] = servoFeedback[SHOULDER_DRIVING_SERVO_ID - 11].pos;
+  goalPos[2] = servoFeedback[SHOULDER_DRIVEN_SERVO_ID - 11].pos;
+  goalPos[3] = servoFeedback[ELBOW_DRIVING_SERVO_ID - 11].pos;
+  goalPos[4] = servoFeedback[ELBOW_DRIVEN_SERVO_ID - 11].pos;
+  goalPos[5] = servoFeedback[GRIPPER_SERVO_ID - 11].pos;
+
+  for (int i = 0; i < 6; i++) {
+    moveSpd[i] = ARM_SERVO_INIT_SPEED;
+    moveAcc[i] = ARM_SERVO_INIT_ACC;
+  }
+  st.SyncWritePosEx(servoID, 6, goalPos, moveSpd, moveAcc);
+  for (int i = 0; i < 6; i++) {
+    moveSpd[i] = 0;
+    moveAcc[i] = ARM_SERVO_INIT_ACC;
+  }
+}
+
+// Emergency stop now keeps torque enabled and freezes the current pose.
 void emergencyStopProcessing() {
-  st.EnableTorque(254, 0);
-  delay(10000);
-  st.EnableTorque(254, 1);
+  RoArmM2_torqueLock = true;
+  servoTorqueCtrl(254, 1);
+  stopConstantMotionCommands();
+
+  if (refreshEmergencyHoldFeedback()) {
+    holdCurrentArmPose();
+  } else if (InfoPrint == 1) {
+    Serial.println("Emergency stop: failed to read full arm feedback, torque held without pose refresh.");
+  }
+
+  // Best-effort stop for the two wheel-mode phone axes while keeping torque.
+  st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
+  st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
+}
+
+bool shouldAbortMotionNow() {
+  return RoArmM2_abortMotion || RoArmM2_emergencyStopFlag || !RoArmM2_torqueLock;
 }
 
 // position check.
@@ -1019,7 +1068,21 @@ void RoArmM2_movePosGoalfromLast(float spdInput) {
   static double bufferLastZ;
   static double bufferLastT;
 
+  bufferLastX = lastX;
+  bufferLastY = lastY;
+  bufferLastZ = lastZ;
+  bufferLastT = lastT;
+
   for (double i = 0; i <= 1; i += (1 / (deltaSteps * 1)) * spdInput) {
+    serialCtrl();
+    if (shouldAbortMotionNow()) {
+      goalX = bufferLastX;
+      goalY = bufferLastY;
+      goalZ = bufferLastZ;
+      goalT = bufferLastT;
+      RoArmM2_lastPosUpdate();
+      return;
+    }
     bufferX = besselCtrl(lastX, goalX, i);
     bufferY = besselCtrl(lastY, goalY, i);
     bufferZ = besselCtrl(lastZ, goalZ, i);
@@ -1044,6 +1107,15 @@ void RoArmM2_movePosGoalfromLast(float spdInput) {
     }
     RoArmM2_goalPosMove();
     delay(2);
+  }
+  serialCtrl();
+  if (shouldAbortMotionNow()) {
+    goalX = bufferLastX;
+    goalY = bufferLastY;
+    goalZ = bufferLastZ;
+    goalT = bufferLastT;
+    RoArmM2_lastPosUpdate();
+    return;
   }
   RoArmM2_baseCoordinateCtrl(goalX, goalY, goalZ, goalT);
   RoArmM2_goalPosMove();
@@ -1551,6 +1623,11 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   unsigned long timeout = 5000;
 
   while (millis() - startTime < timeout) {
+    serialCtrl();
+    if (shouldAbortMotionNow()) {
+      st.WriteSpe(END_EFFECTOR_SERVO_ID, 0, 0);
+      return;
+    }
     int nowPos = endEffectorGetPosition();
     if (nowPos < 0) { delay(20); continue; }
 
@@ -1655,6 +1732,11 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
   unsigned long timeout = 5000; // 5 seconds max
 
   while (millis() - startTime < timeout) {
+    serialCtrl();
+    if (shouldAbortMotionNow()) {
+      st.WriteSpe(PHONE_TILT_SERVO_ID, 0, 0);
+      return;
+    }
     int nowPos = phoneTiltGetPosition();
     if (nowPos < 0) { delay(20); continue; }
 
