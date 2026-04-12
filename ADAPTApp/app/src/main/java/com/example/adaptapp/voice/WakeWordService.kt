@@ -37,10 +37,9 @@ class WakeWordService(private val context: Context) {
         const val MELSPEC_MODEL = "melspectrogram.onnx"
         const val EMBEDDING_MODEL = "embedding_model.onnx"
         val WAKE_WORD_MODELS = mapOf(
-            "hey jarvis" to "hey_jarvis.onnx",
+            "hey jarvis" to "hey_jarvis.onnx"
             // 回滚 hey arm：注释上一行，打开下一行，并把 THRESHOLD_HEY_JARVIS 改回 0.45f
             // "hey arm" to "hey_arm.onnx",
-            "stop" to "stop.onnx"
         )
 
         // Feature dimensions — standard openWakeWord values
@@ -50,7 +49,6 @@ class WakeWordService(private val context: Context) {
         private const val EMBED_WINDOW = 16     // 16 embeddings for detection
 
         private const val THRESHOLD_HEY_JARVIS = 0.5f  // 官方预训练模型用默认阈值；回滚 hey_arm 时改回 0.45f
-        private const val THRESHOLD_STOP = 0.85f       // 急停不降，假阳性代价大
         private const val COOLDOWN_MS = 2000L   // 检测后冷却 2s 防重复
     }
 
@@ -71,6 +69,9 @@ class WakeWordService(private val context: Context) {
     private val melBuffer = ArrayDeque<FloatArray>()
     private val embedBuffer = ArrayDeque<FloatArray>()
     private var lastDetectionTime = 0L
+
+    // Vosk "stop" 检测器（替代 stop.onnx）
+    private var voskDetector: VoskStopDetector? = null
 
     private var _initialized = false
     val isInitialized: Boolean get() = _initialized
@@ -116,8 +117,14 @@ class WakeWordService(private val context: Context) {
                 return false
             }
 
+            // Vosk stop 检测器（异步解压模型，解压完成前 feedAudio 安全降级）
+            voskDetector = VoskStopDetector().also { detector ->
+                detector.onStopDetected = { onWakeWord?.invoke("stop") }
+                detector.initialize(context)
+            }
+
             _initialized = true
-            Log.i(TAG, "Initialized: ${wwSessions.keys}")
+            Log.i(TAG, "Initialized: ${wwSessions.keys} + Vosk stop (async)")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Init failed: ${e.message}")
@@ -151,10 +158,13 @@ class WakeWordService(private val context: Context) {
         isRunning = false
         thread?.join(1000)
         thread = null
+        voskDetector?.reset()
     }
 
     fun destroy() {
         stop()
+        voskDetector?.close()
+        voskDetector = null
         wwSessions.values.forEach { runCatching { it.close() } }
         wwSessions.clear()
         runCatching { melSession?.close() }
@@ -198,6 +208,9 @@ class WakeWordService(private val context: Context) {
             val read = audioRecord?.read(buffer, 0, FRAME_SIZE) ?: break
             if (read != FRAME_SIZE) continue
 
+            // Vosk stop 检测（直接喂 short[]，异步初始化完成前自动跳过）
+            voskDetector?.feedAudio(buffer, read)
+
             // PCM16 → float (keep int16 range, mel model expects it)
             val floats = FloatArray(FRAME_SIZE) { buffer[it].toFloat() }
             processFrame(floats)
@@ -229,8 +242,7 @@ class WakeWordService(private val context: Context) {
 
         for ((keyword, session) in wwSessions) {
             val score = runDetection(ortEnv, session) ?: continue
-            val threshold = if (keyword == "stop") THRESHOLD_STOP else THRESHOLD_HEY_JARVIS
-            if (score > threshold) {
+            if (score > THRESHOLD_HEY_JARVIS) {
                 lastDetectionTime = now
                 Log.i(TAG, "Detected '$keyword' score=${"%.3f".format(score)}")
                 onWakeWord?.invoke(keyword)

@@ -61,6 +61,9 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     // ONNX Runtime（openWakeWord 唤醒词推理）
     implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.0")
+    // Vosk 离线 ASR（grammar 模式检测 "stop"）
+    implementation("com.alphacephei:vosk-android:0.3.75@aar")
+    implementation("net.java.dev.jna:jna:5.18.1@aar")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
