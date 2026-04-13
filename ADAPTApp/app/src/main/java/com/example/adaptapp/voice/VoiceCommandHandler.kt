@@ -90,6 +90,7 @@ class VoiceCommandHandler(
     // Called by WakeWordService when wake word detected (may be off main thread)
     fun onWakeWord(keyword: String) {
         handler.post {
+            Log.i(TAG, "onWakeWord: keyword='$keyword', state=${_voiceState.value.status}")
             when {
                 keyword.equals("stop", ignoreCase = true) -> handleEmergencyStop()
                 _voiceState.value.status == VoiceStatus.IDLE -> transitionToListening()
@@ -101,7 +102,11 @@ class VoiceCommandHandler(
     // 如果 ArmController 处于 stop 状态，拒绝恢复，防止页面切换意外重启语音
     fun resume() {
         handler.post {
-            if (armController.isStopped) return@post
+            if (armController.isStopped) {
+                Log.i(TAG, "resume() ignored because armController.isStopped=true")
+                return@post
+            }
+            Log.i(TAG, "resume(): entering IDLE and restarting wake word")
             srFailureCount = 0
             setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
             onWakeWordStart?.invoke()
@@ -319,6 +324,7 @@ class VoiceCommandHandler(
     // === 事件处理 ===
 
     private fun handleEmergencyStop() {
+        Log.i(TAG, "handleEmergencyStop(): entering emergency stop flow")
         cancelAllTimers()
         stopSpeechRecognizer()
         feedback.stop()
@@ -329,6 +335,7 @@ class VoiceCommandHandler(
         // stop 后不回 IDLE — 进入 PAUSED 并停掉 wake word，语音系统完全沉默
         onWakeWordStop?.invoke()
         setState(VoiceStatus.PAUSED, "Emergency stop")
+        Log.i(TAG, "handleEmergencyStop(): state=PAUSED, wake word stopped")
         feedback.speak("Emergency stop activated")
     }
 

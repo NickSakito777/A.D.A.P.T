@@ -119,7 +119,10 @@ class WakeWordService(private val context: Context) {
 
             // Vosk stop 检测器（异步解压模型，解压完成前 feedAudio 安全降级）
             voskDetector = VoskStopDetector().also { detector ->
-                detector.onStopDetected = { onWakeWord?.invoke("stop") }
+                detector.onStopDetected = {
+                    Log.i(TAG, "Vosk stop callback -> onWakeWord(stop)")
+                    onWakeWord?.invoke("stop")
+                }
                 detector.initialize(context)
             }
 
@@ -159,6 +162,11 @@ class WakeWordService(private val context: Context) {
         thread?.join(1000)
         thread = null
         voskDetector?.reset()
+    }
+
+    fun suppressStopFor(durationMs: Long) {
+        Log.i(TAG, "Suppressing Vosk stop for ${durationMs}ms")
+        voskDetector?.suppressFor(durationMs)
     }
 
     fun destroy() {

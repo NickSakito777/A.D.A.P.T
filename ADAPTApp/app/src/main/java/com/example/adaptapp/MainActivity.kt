@@ -3,6 +3,7 @@ package com.example.adaptapp
 import android.Manifest
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -41,12 +42,20 @@ import com.example.adaptapp.ui.theme.AdaptGrayDark
 import com.example.adaptapp.ui.theme.AdaptTextPrimary
 import com.example.adaptapp.voice.VoiceCommandHandler
 import com.example.adaptapp.voice.VoiceFeedback
+import com.example.adaptapp.voice.VoskResumeDetector
 import com.example.adaptapp.voice.WakeWordService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class Screen { HOME, POSITIONS, SETUP, DEBUG }
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val TAG = "MainActivity"
+        private const val VOICE_RESUME_DELAY_MS = 1800L
+        private const val STOP_SUPPRESS_AFTER_RESUME_MS = 900L
+    }
 
     private lateinit var usbManager: UsbSerialManager
     private lateinit var btManager: BluetoothSppManager
@@ -55,6 +64,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var voiceFeedback: VoiceFeedback
     private lateinit var wakeWordService: WakeWordService
     private lateinit var voiceCommandHandler: VoiceCommandHandler
+    private lateinit var resumeDetector: VoskResumeDetector
     private var voiceAvailable = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,6 +100,9 @@ class MainActivity : ComponentActivity() {
         wakeWordService.onWakeWord = { keyword -> voiceCommandHandler.onWakeWord(keyword) }
         voiceCommandHandler.onWakeWordStart = { wakeWordService.start() }
         voiceCommandHandler.onWakeWordStop = { wakeWordService.stop() }
+
+        resumeDetector = VoskResumeDetector(this)
+        resumeDetector.initialize()
 
         if (!voiceAvailable) {
             Toast.makeText(this, "Voice control unavailable (model files missing)", Toast.LENGTH_LONG).show()
@@ -131,11 +144,42 @@ class MainActivity : ComponentActivity() {
 
                 val voiceState by voiceCommandHandler.voiceState.collectAsState()
                 var voiceEnabled by remember { mutableStateOf(true) }
+                var resumeInFlight by remember { mutableStateOf(false) }
+                var pendingVoiceResumeAfterStop by remember { mutableStateOf(false) }
                 LaunchedEffect(currentScreen, voiceEnabled) {
                     if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) && voiceAvailable && voiceEnabled) {
                         voiceCommandHandler.resume()
                     } else {
                         voiceCommandHandler.pause()
+                    }
+                }
+                LaunchedEffect(armController.isStopped) {
+                    if (!armController.isStopped) {
+                        resumeInFlight = false
+                    }
+                }
+                LaunchedEffect(
+                    armController.isStopped,
+                    pendingVoiceResumeAfterStop,
+                    currentScreen,
+                    voiceEnabled,
+                    voiceAvailable
+                ) {
+                    if (!armController.isStopped && pendingVoiceResumeAfterStop) {
+                        Log.i(TAG, "Delayed voice resume scheduled after stop recovery")
+                        delay(VOICE_RESUME_DELAY_MS)
+                        pendingVoiceResumeAfterStop = false
+                        if (!armController.isStopped &&
+                            (currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) &&
+                            voiceAvailable &&
+                            voiceEnabled
+                        ) {
+                            Log.i(TAG, "Applying stop suppression window before resuming voice")
+                            wakeWordService.suppressStopFor(STOP_SUPPRESS_AFTER_RESUME_MS)
+                            voiceCommandHandler.resume()
+                        } else {
+                            Log.i(TAG, "Skipping delayed voice resume; state changed during delay")
+                        }
                     }
                 }
 
@@ -200,25 +244,50 @@ class MainActivity : ComponentActivity() {
                     }
 
                     if (armController.isStopped) {
-                        StopActiveOverlay(
-                            onResumeTest = {
-                                if (armController.releaseEmergencyStop()) {
-                                    if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) &&
-                                        voiceAvailable && voiceEnabled
-                                    ) {
-                                        voiceCommandHandler.resume()
-                                    } else {
-                                        voiceCommandHandler.pause()
-                                    }
+                        val handleResume = resume@{ source: String ->
+                            if (resumeInFlight) return@resume
+                            Log.i(TAG, "handleResume(source=$source): begin, screen=$currentScreen")
+                            resumeInFlight = true
+                            if (armController.releaseEmergencyStop()) {
+                                Log.i(TAG, "handleResume(source=$source): releaseEmergencyStop succeeded")
+                                if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) &&
+                                    voiceAvailable && voiceEnabled
+                                ) {
+                                    Log.i(TAG, "handleResume(source=$source): voice resume deferred until overlay exits")
+                                    pendingVoiceResumeAfterStop = true
                                 } else {
-                                    Toast.makeText(
-                                        this@MainActivity,
-                                        "Connection required to resume controls",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    pendingVoiceResumeAfterStop = false
+                                    Log.i(TAG, "handleResume(source=$source): pausing voice for current screen")
+                                    voiceCommandHandler.pause()
                                 }
+                            } else {
+                                Log.w(TAG, "handleResume(source=$source): releaseEmergencyStop failed (likely disconnected)")
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Connection required for resume control",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                pendingVoiceResumeAfterStop = false
+                                resumeInFlight = false
                             }
-                        )
+                        }
+
+                        DisposableEffect(Unit) {
+                            resumeDetector.onResumeDetected = {
+                                Log.i(TAG, "resumeDetector.onResumeDetected()")
+                                runOnUiThread { handleResume("voice") }
+                            }
+                            Log.i(TAG, "Stop overlay entered -> start resume detector")
+                            resumeDetector.start()
+                            onDispose {
+                                Log.i(TAG, "Stop overlay disposed -> stop resume detector")
+                                resumeDetector.stop()
+                                resumeDetector.onResumeDetected = null
+                                resumeInFlight = false
+                            }
+                        }
+
+                        StopActiveOverlay(onResumeTest = { handleResume("button") })
                     }
                 }
 
@@ -239,6 +308,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        resumeDetector.destroy()
         voiceCommandHandler.destroy()
         wakeWordService.destroy()
         voiceFeedback.destroy()
@@ -369,7 +439,7 @@ private fun StopActiveOverlay(
                 )
                 Spacer(modifier = Modifier.height(20.dp))
                 Button(onClick = onResumeTest) {
-                    Text("Resume Controls (Test)")
+                    Text("Resume Control (Test)")
                 }
             }
         }

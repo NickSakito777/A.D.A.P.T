@@ -13,7 +13,7 @@ class VoskStopDetector {
         private const val TAG = "VoskStopDetector"
         private const val SAMPLE_RATE = 16000f
         private const val GRAMMAR = """["stop", "[unk]"]"""
-        private const val COOLDOWN_MS = 2000L
+        private const val COOLDOWN_MS = 1200L
         private const val MODEL_ASSET_DIR = "model-en-us"
     }
 
@@ -22,6 +22,8 @@ class VoskStopDetector {
     @Volatile private var recognizer: Recognizer? = null
     private var model: Model? = null
     private var lastDetectionTime = 0L
+    private var lastLoggedText = ""
+    @Volatile private var suppressUntilMs = 0L
 
     fun initialize(context: Context) {
         StorageService.unpack(
@@ -44,22 +46,30 @@ class VoskStopDetector {
         val rec = recognizer ?: return
         if (rec.acceptWaveForm(buffer, count)) {
             // finalResult — 也检查一下
-            checkResult(rec.result)
+            checkResult(rec.result, "final")
         } else {
-            checkResult(rec.partialResult)
+            checkResult(rec.partialResult, "partial")
         }
     }
 
-    private fun checkResult(json: String) {
+    private fun checkResult(json: String, source: String) {
         try {
             val obj = JSONObject(json)
-            val text = obj.optString("partial", obj.optString("text", ""))
+            val text = obj.optString("partial", obj.optString("text", "")).trim()
+            if (text.isNotEmpty() && text != lastLoggedText) {
+                lastLoggedText = text
+                Log.i(TAG, "Heard stop candidate ($source): '$text'")
+            }
             if (text.contains("stop", ignoreCase = true)) {
                 val now = System.currentTimeMillis()
-                if (now - lastDetectionTime >= COOLDOWN_MS) {
+                if (now < suppressUntilMs) {
+                    Log.i(TAG, "Stop candidate suppressed by resume window ($source): $json")
+                } else if (now - lastDetectionTime >= COOLDOWN_MS) {
                     lastDetectionTime = now
-                    Log.i(TAG, "Stop detected: $json")
+                    Log.i(TAG, "Stop detected ($source): $json")
                     onStopDetected?.invoke()
+                } else {
+                    Log.i(TAG, "Stop candidate suppressed by cooldown ($source): $json")
                 }
             }
         } catch (e: Exception) {
@@ -70,6 +80,13 @@ class VoskStopDetector {
     fun reset() {
         recognizer?.reset()
         lastDetectionTime = 0L
+        lastLoggedText = ""
+    }
+
+    fun suppressFor(durationMs: Long) {
+        val until = System.currentTimeMillis() + durationMs
+        suppressUntilMs = maxOf(suppressUntilMs, until)
+        Log.i(TAG, "Suppressing stop detection for ${durationMs}ms")
     }
 
     fun close() {
