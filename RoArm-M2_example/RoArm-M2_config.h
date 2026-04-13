@@ -235,6 +235,17 @@ enum EstopState {
 };
 volatile EstopState estopState = ESTOP_NORMAL;
 
+// Constant motion supervisor: generation snapshot taken when constant motion
+// starts. constantHandle() stops if motionGeneration has drifted (stop or
+// new external motion arrived).
+volatile uint16_t constMotionGen = 0;
+
+// Mission session flags: missionRunning is true while missionPlay() is
+// executing. missionAbortRequested is set by external commands (via
+// serialCtrl) or emergency stop to signal the mission loop to exit.
+volatile bool missionRunning = false;
+volatile bool missionAbortRequested = false;
+
 bool nanIK;
 
 bool RoArmM2_initCheckSucceed  = false;

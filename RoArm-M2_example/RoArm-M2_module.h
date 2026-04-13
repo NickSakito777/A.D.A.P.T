@@ -1283,8 +1283,27 @@ void getCirclePointYZ(double cx, double cy, double r, double t) {
   goalZ = cy + r * sin(theta);
 }
 
-// delay cmd.
-void RoArmM2_delayMillis(int inputTime) { delay(inputTime); }
+// delay cmd — interruptible 10ms-slice loop.
+// Each slice calls serialCtrl() to process pending serial/BT input, then
+// checks supervisor signals. A real external motion command bumps
+// motionGeneration; emergency stop sets the flag; mission abort is set by
+// serialCtrl when it parses an external command during mission playback.
+// Raw bytes / partial packets / noise won't trigger abort.
+void RoArmM2_delayMillis(int inputTime) {
+  uint16_t myGen = motionGeneration;
+  unsigned long startMs = millis();
+  while (millis() - startMs < (unsigned long)inputTime) {
+    serialCtrl();
+    if (motionGeneration != myGen ||
+        missionAbortRequested ||
+        RoArmM2_emergencyStopFlag) {
+      return;
+    }
+    unsigned long elapsed = millis() - startMs;
+    unsigned long remaining = (unsigned long)inputTime - elapsed;
+    delay(remaining < 10 ? remaining : 10);
+  }
+}
 
 // set the P&I/PID of a joint.
 void RoArmM2_setJointPID(byte jointInput, float inputP, float inputI) {
@@ -1450,6 +1469,11 @@ void constantCtrl(byte inputMode, byte inputAxis, byte inputCmd,
     const_spd = abs(inputSpd) * 0.1;
   }
 
+  // Record generation snapshot so constantHandle() can detect invalidation
+  if (inputCmd != MOVE_STOP) {
+    constMotionGen = motionGeneration;
+  }
+
   switch (inputAxis) {
   case BASE_JOINT:
     const_cmd_base_x = inputCmd;
@@ -1468,6 +1492,26 @@ void constantCtrl(byte inputMode, byte inputAxis, byte inputCmd,
 
 // RoArmM2_infoFeedback()
 void constantHandle() {
+  // Supervisor gate: if motionGeneration has drifted (stop or new external
+  // motion command), or estop active, or torque off — kill constant motion
+  // and reset goal baselines to current pose so the next constant start
+  // doesn't yank idle axes toward stale targets.
+  if (motionGeneration != constMotionGen ||
+      estopState != ESTOP_NORMAL ||
+      !RoArmM2_torqueLock) {
+    stopConstantMotionCommands();
+    const_goal_base = radB;
+    const_goal_shoulder = radS;
+    const_goal_elbow = radE;
+    const_goal_eoat = radG;
+    goalX = lastX;
+    goalY = lastY;
+    goalZ = lastZ;
+    goalT = lastT;
+    constMotionGen = motionGeneration;  // prevent re-triggering every tick
+    return;
+  }
+
   if (!const_cmd_base_x && !const_cmd_shoulder_y && !const_cmd_elbow_z &&
       !const_cmd_eoat_t) {
     const_goal_base = radB;
