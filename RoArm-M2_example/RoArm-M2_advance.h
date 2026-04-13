@@ -4,14 +4,17 @@ void jsonCmdReceiveHandler();
 bool moveToStep(String inputName, int inputStepNum);
 
 
-// mission abort after serial received anything.
+// Mission abort check — returns true if mission should stop.
+// Only triggers on missionAbortRequested (set by serialCtrl when it
+// successfully parses a real external command) or emergency stop flag.
+// Raw Serial.available()/SerialBT.available() are NOT checked here to
+// avoid false aborts from partial packets or noise.
 bool serialMissionAbort() {
-	if (Serial.available()) {
+	if (missionAbortRequested || RoArmM2_emergencyStopFlag) {
 		if (InfoPrint == 1) {Serial.println("[missionPlay abort.]");}
 		return true;
-	} else {
-		return false;
 	}
+	return false;
 }
 
 
@@ -251,13 +254,16 @@ bool moveToStep(String inputName, int inputStepNum) {
 // when repeatTimes = -1, it will loop forever.
 // play a mission file.
 void missionPlay(String inputName, int repeatTimes) {
+	missionRunning = true;
+	missionAbortRequested = false;
+
 	int _LineNum = missionContent(inputName);
 	int currentTimes = 0;
 	while (1) {
 		currentTimes++;
 		if (currentTimes > repeatTimes && repeatTimes != -1) {
 			if (InfoPrint == 1) {Serial.println("[missionPlay finished.]");}
-			return;
+			break;
 		}
 		if (InfoPrint == 1) {
 			Serial.print("---\n[currentTimes: ");Serial.print(currentTimes);
@@ -266,11 +272,20 @@ void missionPlay(String inputName, int repeatTimes) {
 
 		for (int i = 1; i<=_LineNum; i++) {
 			if (serialMissionAbort()) {
-				return;
+				goto mission_exit;
 			}
 			moveToStep(inputName, i);
+			// Re-check after each step in case abort was set during
+			// a blocking motion or delay inside the step.
+			if (serialMissionAbort()) {
+				goto mission_exit;
+			}
 		}
 	}
+
+mission_exit:
+	missionRunning = false;
+	missionAbortRequested = false;
 }
 
 

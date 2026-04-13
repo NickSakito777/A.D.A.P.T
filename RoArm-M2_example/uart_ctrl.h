@@ -41,6 +41,7 @@ void jsonCmdReceiveHandler(){
 												estopState = ESTOP_STOP_ACTIVE;
 												RoArmM2_emergencyStopFlag = true;
 												RoArmM2_abortMotion = true;
+												missionAbortRequested = true;
 												emergencyStopProcessing();
 												break;
 	case CMD_RESET_EMERGENCY: 
@@ -324,11 +325,19 @@ void jsonCmdReceiveHandler(){
 												);break;
 
 	case CMD_MOVE_TO_STEP:
+												if (missionRunning) {
+													if (InfoPrint == 1) Serial.println("[reject moveToStep: mission running]");
+													break;
+												}
 												moveToStep(
 												jsonCmdReceive["name"],
 												jsonCmdReceive["stepNum"]
 												);break;
 	case CMD_MISSION_PLAY:
+												if (missionRunning) {
+													if (InfoPrint == 1) Serial.println("[reject missionPlay: mission running]");
+													break;
+												}
 												missionPlay(
 												jsonCmdReceive["name"],
 												jsonCmdReceive["times"]
@@ -539,6 +548,8 @@ void serialCtrl() {
   			if (InfoPrint == 1) {
   				Serial.println(receivedData);
   			}
+        // Any external serial command during mission playback triggers abort
+        if (missionRunning) { missionAbortRequested = true; }
         jsonCmdReceiveHandler();
       }
       receivedData = "";
@@ -556,6 +567,8 @@ void serialCtrl() {
         if (InfoPrint == 1) {
           Serial.println(btReceivedData);  // 蓝牙收到的命令也打印到 USB 串口方便调试
         }
+        // Any external BT command during mission playback triggers abort
+        if (missionRunning) { missionAbortRequested = true; }
         // 蓝牙命令的响应同时发到蓝牙和 USB
         jsonCmdReceiveHandler();
       }
