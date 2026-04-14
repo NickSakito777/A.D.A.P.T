@@ -12,6 +12,12 @@ class CommandMatcher {
         data object Landscape : MatchResult()
         data object Portrait : MatchResult()
         data object FoldArm : MatchResult()
+        data object AdjustLeft : MatchResult()
+        data object AdjustRight : MatchResult()
+        data object AdjustUp : MatchResult()
+        data object AdjustDown : MatchResult()
+        data object TiltUp : MatchResult()
+        data object TiltDown : MatchResult()
         data class PositionMatch(val name: String) : MatchResult()
         data class Ambiguous(val candidates: List<String>) : MatchResult()
         data object NoMatch : MatchResult()
@@ -36,16 +42,30 @@ class CommandMatcher {
         if (lower.contains("landscape")) return MatchResult.Landscape
         if (lower.contains("portrait")) return MatchResult.Portrait
 
-        // 4. 折叠
+        // 4. 微调命令 — adjust / tilt
+        // "adjust" 和 "nudge" 是明确的微调前缀，不会和 "move to [position]" 冲突
+        // 不匹配 "move left/right" 等，避免和 "move to left position" 碰撞
+        if (lower.contains("adjust") || lower.contains("nudge")) {
+            if (lower.contains("left")) return MatchResult.AdjustLeft
+            if (lower.contains("right")) return MatchResult.AdjustRight
+            if (lower.contains("up")) return MatchResult.AdjustUp
+            if (lower.contains("down")) return MatchResult.AdjustDown
+        }
+        if (lower.contains("tilt")) {
+            if (lower.contains("up")) return MatchResult.TiltUp
+            if (lower.contains("down")) return MatchResult.TiltDown
+        }
+
+        // 5. 折叠
         if (lower.contains("fold")) return MatchResult.FoldArm
 
-        // 5. 位置召回 — 提取位置名关键词，模糊匹配
+        // 6. 位置召回 — 提取位置名关键词，模糊匹配
         val query = extractPositionQuery(lower)
         if (query.isNotEmpty() && positionNames.isNotEmpty()) {
             return matchPosition(query, positionNames)
         }
 
-        // 6. 没有明确前缀时，尝试用整句话直接匹配位置名
+        // 7. 没有明确前缀时，尝试用整句话直接匹配位置名
         if (positionNames.isNotEmpty()) {
             return matchPosition(lower, positionNames)
         }

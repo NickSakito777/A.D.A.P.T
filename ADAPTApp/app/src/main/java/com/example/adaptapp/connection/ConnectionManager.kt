@@ -30,6 +30,9 @@ interface ConnectionManager {
     // 发送 JSON 命令（如 {"T":105}）
     fun send(json: String)
 
-    // 设置数据接收回调（ESP32 返回的 JSON 响应）
-    fun setOnReceiveCallback(callback: (String) -> Unit)
+    // 多订阅接收回调：key 唯一标识订阅者，同一 key 重复调用会覆盖
+    fun addOnReceiveListener(key: String, callback: (String) -> Unit)
+
+    // 移除指定订阅者
+    fun removeOnReceiveListener(key: String)
 }

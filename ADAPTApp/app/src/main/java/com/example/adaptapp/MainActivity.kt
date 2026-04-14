@@ -29,8 +29,12 @@ import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionMode
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.connection.UsbSerialManager
+import com.example.adaptapp.controller.AlignmentStatus
 import com.example.adaptapp.controller.ArmController
+import com.example.adaptapp.controller.AutoLevelController
+import com.example.adaptapp.model.SessionBaseline
 import com.example.adaptapp.repository.PositionRepository
+import com.example.adaptapp.sensor.PhoneOrientationService
 import com.example.adaptapp.ui.component.EmergencyStopButton
 import com.example.adaptapp.ui.screen.DebugScreen
 import com.example.adaptapp.ui.screen.HomeScreen
@@ -65,6 +69,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var wakeWordService: WakeWordService
     private lateinit var voiceCommandHandler: VoiceCommandHandler
     private lateinit var resumeDetector: VoskResumeDetector
+    private lateinit var phoneOrientationService: PhoneOrientationService
+    private lateinit var autoLevelController: AutoLevelController
     private var voiceAvailable = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,6 +91,8 @@ class MainActivity : ComponentActivity() {
         btManager = BluetoothSppManager(this)
         armController = ArmController(usbManager)
         positionRepository = PositionRepository(this)
+        phoneOrientationService = PhoneOrientationService(this)
+        autoLevelController = AutoLevelController(armController, phoneOrientationService)
 
         voiceFeedback = VoiceFeedback(this)
         wakeWordService = WakeWordService(this)
@@ -100,6 +108,19 @@ class MainActivity : ComponentActivity() {
         wakeWordService.onWakeWord = { keyword -> voiceCommandHandler.onWakeWord(keyword) }
         voiceCommandHandler.onWakeWordStart = { wakeWordService.start() }
         voiceCommandHandler.onWakeWordStop = { wakeWordService.stop() }
+        voiceCommandHandler.isAligned = { autoLevelController.status.value == AlignmentStatus.ALIGNED }
+        voiceCommandHandler.isAligning = { autoLevelController.status.value == AlignmentStatus.ALIGNING }
+
+        // 全局反馈监听：解析 T:1051 反馈，分发给 VoiceCommandHandler 和 AutoLevelController
+        val feedbackCallback = { message: String ->
+            val pos = ArmController.parseFeedback(message)
+            if (pos != null) {
+                voiceCommandHandler.onFeedbackReceived(pos)
+                pos.p?.let { autoLevelController.onFeedbackReceived(it) }
+            }
+        }
+        usbManager.addOnReceiveListener("global_feedback", feedbackCallback)
+        btManager.addOnReceiveListener("global_feedback", feedbackCallback)
 
         resumeDetector = VoskResumeDetector(this)
         resumeDetector.initialize()
@@ -123,6 +144,21 @@ class MainActivity : ComponentActivity() {
 
                 LaunchedEffect(activeMode) {
                     armController.connection = activeConnection
+                    voiceCommandHandler.invalidateFeedback()
+                }
+
+                val alignmentStatus by autoLevelController.status.collectAsState()
+
+                val connectionState by activeConnection.connectionState.collectAsState()
+                LaunchedEffect(connectionState) {
+                    if (connectionState == ConnectionState.CONNECTED) {
+                        armController.sendIkParams()
+                        kotlinx.coroutines.delay(500)
+                        armController.readFeedback()
+                    } else if (connectionState == ConnectionState.DISCONNECTED) {
+                        voiceCommandHandler.invalidateFeedback()
+                        autoLevelController.reset()
+                    }
                 }
 
                 val onSwitchMode: (ConnectionMode) -> Unit = { newMode ->
@@ -211,7 +247,9 @@ class MainActivity : ComponentActivity() {
                                 voiceEnabled = voiceEnabled,
                                 onVoiceToggle = { voiceEnabled = it },
                                 onEnterSetup = { currentScreen = Screen.SETUP },
-                                onOpenDrawer = { scope.launch { drawerState.open() } }
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                alignmentStatus = alignmentStatus,
+                                onAlignTap = { autoLevelController.start() }
                             )
                             Screen.POSITIONS -> PositionsScreen(
                                 connection = activeConnection,
@@ -308,6 +346,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        autoLevelController.reset()
+        phoneOrientationService.stop()
         resumeDetector.destroy()
         voiceCommandHandler.destroy()
         wakeWordService.destroy()

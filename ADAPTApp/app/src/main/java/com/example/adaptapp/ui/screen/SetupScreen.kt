@@ -44,9 +44,13 @@ fun SetupScreen(
     val context = LocalContext.current
 
     var lastResponse by remember { mutableStateOf("") }
-    LaunchedEffect(Unit) {
-        connection.setOnReceiveCallback { message ->
-            lastResponse = message
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    DisposableEffect(connection) {
+        connection.addOnReceiveListener("setup") { message ->
+            mainHandler.post { lastResponse = message }
+        }
+        onDispose {
+            connection.removeOnReceiveListener("setup")
         }
     }
 

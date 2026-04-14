@@ -11,6 +11,7 @@ import android.speech.SpeechRecognizer
 import android.util.Log
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.controller.ArmController
+import com.example.adaptapp.controller.StepAdjustmentController
 import com.example.adaptapp.model.ArmPosition
 import com.example.adaptapp.repository.PositionRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -51,6 +52,8 @@ class VoiceCommandHandler(
         private const val ARRIVAL_DELAY_MS = 4000L
         private const val MAX_SR_FAILURES = 3
         private const val SR_FAILURE_DELAY_MS = 300L  // SR 失败后短延迟恢复唤醒词，避免长死时间导致用户新 hey jarvis 被吞
+        private const val FEEDBACK_FRESHNESS_MS = 3000L
+        private const val ADJUST_FEEDBACK_TIMEOUT_MS = 1000L  // adjust 前等待 T:1051 超时
     }
 
     // UI 观察的状态流
@@ -62,9 +65,34 @@ class VoiceCommandHandler(
     var onWakeWordStart: (() -> Unit)? = null
     var onWakeWordStop: (() -> Unit)? = null
 
+    // Alignment gating — 由 MainActivity 设置
+    var isAligned: () -> Boolean = { true }
+    var isAligning: () -> Boolean = { false }
+
     private val matcher = CommandMatcher()
+    private val stepController = StepAdjustmentController(armController)
     private val handler = Handler(Looper.getMainLooper())
     private var speechRecognizer: SpeechRecognizer? = null
+    @Volatile
+    private var lastFeedback: ArmPosition? = null
+    @Volatile
+    private var lastFeedbackTimestampMs: Long = 0L
+
+    // 问题 4 方案 A：adjust 前等待 fresh feedback
+    @Volatile
+    private var pendingAdjustAction: ((ArmPosition) -> StepAdjustmentController.AdjustResult)? = null
+    @Volatile
+    private var pendingAdjustTtsMessage: String? = null
+    private var adjustFeedbackRequestTimestampMs: Long = 0L
+    private val adjustFeedbackTimeoutRunnable = Runnable {
+        if (pendingAdjustAction != null) {
+            Log.w(TAG, "Adjust feedback timeout")
+            pendingAdjustAction = null
+            pendingAdjustTtsMessage = null
+            returnToIdle()
+            feedback.speak("Position data not available, please try again")
+        }
+    }
 
     // 待执行的动作（确认态使用）
     private var pendingAction: PendingAction? = null
@@ -75,6 +103,12 @@ class VoiceCommandHandler(
 
     private val timeoutRunnable = Runnable { handleTimeout() }
     private val arrivalRunnable = Runnable { handleArrival() }
+    private val adjustFinishRunnable = Runnable {
+        if (armController.isStopped) return@Runnable
+        if (_voiceState.value.status != VoiceStatus.EXECUTING) return@Runnable
+        armController.readFeedback()
+        setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
+    }
     // 必须是 named Runnable，匿名 lambda 无法被 removeCallbacks 取消
     private val srFailureRestartRunnable = Runnable { onWakeWordStart?.invoke() }
 
@@ -82,6 +116,43 @@ class VoiceCommandHandler(
     private sealed class PendingAction {
         data class MoveToPosition(val name: String, val position: ArmPosition) : PendingAction()
         data object Fold : PendingAction()
+    }
+
+    // 接收固件反馈数据（T:1051），由 MainActivity 的 receive callback 调用
+    fun onFeedbackReceived(position: ArmPosition) {
+        lastFeedback = position
+        lastFeedbackTimestampMs = System.currentTimeMillis()
+
+        // 如果有等待 fresh feedback 的 adjust 命令，在主线程执行
+        val action = pendingAdjustAction
+        val tts = pendingAdjustTtsMessage
+        if (action != null && tts != null) {
+            handler.post {
+                handler.removeCallbacks(adjustFeedbackTimeoutRunnable)
+                val currentAction = pendingAdjustAction ?: return@post
+                val currentTts = pendingAdjustTtsMessage ?: return@post
+                pendingAdjustAction = null
+                pendingAdjustTtsMessage = null
+                if (armController.isStopped || _voiceState.value.status != VoiceStatus.EXECUTING) return@post
+                val result = currentAction(position)
+                when (result) {
+                    is StepAdjustmentController.AdjustResult.Success -> {
+                        feedback.speak(currentTts)
+                        handler.postDelayed(adjustFinishRunnable, 1500)
+                    }
+                    is StepAdjustmentController.AdjustResult.Failed -> {
+                        returnToIdle()
+                        feedback.speak("Adjustment failed: ${result.reason}")
+                    }
+                }
+            }
+        }
+    }
+
+    // 清除反馈缓存（断连、模式切换、进入 Setup 时调用）
+    fun invalidateFeedback() {
+        lastFeedback = null
+        lastFeedbackTimestampMs = 0L
     }
 
     // === 外部调用入口 ===
@@ -110,6 +181,9 @@ class VoiceCommandHandler(
             srFailureCount = 0
             setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
             onWakeWordStart?.invoke()
+            if (armController.connection.connectionState.value == ConnectionState.CONNECTED) {
+                armController.readFeedback()
+            }
         }
     }
 
@@ -122,6 +196,7 @@ class VoiceCommandHandler(
             onWakeWordStop?.invoke()
             pendingAction = null
             pendingCandidates = null
+            invalidateFeedback()
             setState(VoiceStatus.PAUSED)
         }
     }
@@ -155,10 +230,16 @@ class VoiceCommandHandler(
             return
         }
 
-        // 急停优先级最高
+        // 急停优先级最高 — 即使在 alignment 期间也必须响应
         val lower = text.lowercase()
         if (lower.contains("stop") || lower.contains("emergency")) {
             handleEmergencyStop()
+            return
+        }
+
+        // Auto-Level 期间拒绝所有非急停命令
+        if (isAligning()) {
+            Log.w(TAG, "Ignoring command during phone alignment")
             return
         }
 
@@ -173,12 +254,30 @@ class VoiceCommandHandler(
         when (result) {
             is CommandMatcher.MatchResult.EmergencyStop -> handleEmergencyStop()
             is CommandMatcher.MatchResult.Cancel -> handleCancel()
-            is CommandMatcher.MatchResult.Landscape -> executeImmediate("Landscape mode") {
-                armController.setPhoneMode(true)
+            is CommandMatcher.MatchResult.Landscape -> {
+                if (!isAligned()) {
+                    stopSpeechRecognizer()
+                    returnToIdle()
+                    feedback.speak("Please align the phone first")
+                    return
+                }
+                executeImmediate("Landscape mode") { armController.setPhoneMode(true) }
             }
-            is CommandMatcher.MatchResult.Portrait -> executeImmediate("Portrait mode") {
-                armController.setPhoneMode(false)
+            is CommandMatcher.MatchResult.Portrait -> {
+                if (!isAligned()) {
+                    stopSpeechRecognizer()
+                    returnToIdle()
+                    feedback.speak("Please align the phone first")
+                    return
+                }
+                executeImmediate("Portrait mode") { armController.setPhoneMode(false) }
             }
+            is CommandMatcher.MatchResult.AdjustLeft -> executeAdjustment("Adjusting left") { fb -> stepController.adjustLeft(fb) }
+            is CommandMatcher.MatchResult.AdjustRight -> executeAdjustment("Adjusting right") { fb -> stepController.adjustRight(fb) }
+            is CommandMatcher.MatchResult.AdjustUp -> executeAdjustment("Adjusting up") { fb -> stepController.adjustUp(fb) }
+            is CommandMatcher.MatchResult.AdjustDown -> executeAdjustment("Adjusting down") { fb -> stepController.adjustDown(fb) }
+            is CommandMatcher.MatchResult.TiltUp -> executeAdjustment("Tilting up") { fb -> stepController.tiltUp(fb) }
+            is CommandMatcher.MatchResult.TiltDown -> executeAdjustment("Tilting down") { fb -> stepController.tiltDown(fb) }
             is CommandMatcher.MatchResult.FoldArm -> {
                 requestConfirmation(PendingAction.Fold, "Fold the arm, confirm?")
             }
@@ -321,6 +420,30 @@ class VoiceCommandHandler(
         feedback.speak(ttsMessage)
     }
 
+    // 执行微调命令 — 先请求 fresh feedback，等回包后再执行
+    private fun executeAdjustment(ttsMessage: String, action: (ArmPosition) -> StepAdjustmentController.AdjustResult) {
+        if (!checkConnection()) return
+
+        if (positionRepository.getAll().none { it.isSafe }) {
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please define a safe position first")
+            return
+        }
+
+        pendingAction = null
+        srFailureCount = 0
+        setState(VoiceStatus.EXECUTING, "Adjusting")
+        onWakeWordStart?.invoke()
+
+        // 方案 A：发 T:105 请求 fresh feedback，等 onFeedbackReceived 回调后执行
+        pendingAdjustAction = action
+        pendingAdjustTtsMessage = ttsMessage
+        adjustFeedbackRequestTimestampMs = System.currentTimeMillis()
+        armController.readFeedback()
+        handler.postDelayed(adjustFeedbackTimeoutRunnable, ADJUST_FEEDBACK_TIMEOUT_MS)
+    }
+
     // === 事件处理 ===
 
     private fun handleEmergencyStop() {
@@ -331,7 +454,9 @@ class VoiceCommandHandler(
         armController.emergencyStop()
         pendingAction = null
         pendingCandidates = null
+        pendingAdjustAction = null
         srFailureCount = 0
+        invalidateFeedback()
         // stop 后不回 IDLE — 进入 PAUSED 并停掉 wake word，语音系统完全沉默
         onWakeWordStop?.invoke()
         setState(VoiceStatus.PAUSED, "Emergency stop")
@@ -365,6 +490,8 @@ class VoiceCommandHandler(
         // openWakeWord 已在 executeAction 中启动，无需重复
         setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
         feedback.speak("Arrived")
+        // 到达后刷新位姿，供后续 adjust 命令使用
+        armController.readFeedback()
     }
 
     // 回到待命态：启动唤醒词 + 更新 UI
@@ -498,7 +625,11 @@ class VoiceCommandHandler(
     private fun cancelAllTimers() {
         handler.removeCallbacks(timeoutRunnable)
         handler.removeCallbacks(arrivalRunnable)
+        handler.removeCallbacks(adjustFinishRunnable)
+        handler.removeCallbacks(adjustFeedbackTimeoutRunnable)
         handler.removeCallbacks(srFailureRestartRunnable)
+        pendingAdjustAction = null
+        pendingAdjustTtsMessage = null
     }
 
     // === 工具 ===

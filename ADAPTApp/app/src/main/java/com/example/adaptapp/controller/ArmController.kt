@@ -8,6 +8,7 @@ import androidx.compose.runtime.setValue
 import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.model.ArmPosition
+import com.example.adaptapp.model.SessionBaseline
 import org.json.JSONObject
 
 // 机械臂控制器 — 封装所有 T-code 命令
@@ -93,10 +94,40 @@ class ArmController(var connection: ConnectionManager) {
         send("""{"T":702,"cmd":$cmd}""")
     }
 
-    // Phone 横竖屏模式
+    // Phone 横竖屏模式 — 有 baseline 时用 T:700 绝对角度，无 baseline 时回退到 T:701
     fun setPhoneMode(landscape: Boolean) {
-        val cmd = if (landscape) 0 else 1
-        send("""{"T":701,"cmd":$cmd}""")
+        val baseline = SessionBaseline.rollDeg
+        if (baseline != null) {
+            val target = if (landscape) baseline + SessionBaseline.LANDSCAPE_OFFSET_DEG else baseline
+            sendRollAbsolute(target)
+        } else {
+            val mode = if (landscape) "landscape" else "portrait"
+            send("""{"T":701,"mode":"$mode"}""")
+        }
+    }
+
+    // 当前生效的 IK 参数（连接时下发给固件，标定后可更新）
+    var currentIkParams: com.example.adaptapp.model.IkParams = com.example.adaptapp.model.IkParams.DEFAULT
+
+    // 下发 IK 参数到固件（T:116）
+    fun sendIkParams(params: com.example.adaptapp.model.IkParams = currentIkParams) {
+        send("""{"T":116,"l2A":${params.l2A},"l2B":${params.l2B},"l3A":${params.l3A},"l3B":${params.l3B}}""")
+    }
+
+    // 笛卡尔绝对坐标控制（T:104）— 供 StepAdjustmentController 使用
+    fun sendCartesianGoal(x: Double, y: Double, z: Double, t: Double, spd: Double = 0.25) {
+        send("""{"T":104,"x":$x,"y":$y,"z":$z,"t":$t,"spd":$spd}""")
+    }
+
+    // Roll 绝对角度控制（T:700）— 自动 wrap 到 0-360
+    fun sendRollAbsolute(angleDeg: Double) {
+        val wrapped = ((angleDeg % 360.0) + 360.0) % 360.0
+        send("""{"T":700,"angle":$wrapped}""")
+    }
+
+    // Tilt 绝对角度控制（T:703）
+    fun sendTiltAbsolute(angleDeg: Double) {
+        send("""{"T":703,"angle":$angleDeg}""")
     }
 
     // 安全折叠序列：先移到 torque closed 位置，再松扭矩

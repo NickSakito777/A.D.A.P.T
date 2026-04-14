@@ -26,6 +26,7 @@ import android.widget.Toast
 import com.example.adaptapp.connection.ConnectionManager
 import com.example.adaptapp.connection.ConnectionMode
 import com.example.adaptapp.connection.ConnectionState
+import com.example.adaptapp.controller.AlignmentStatus
 import com.example.adaptapp.controller.ArmController
 import com.example.adaptapp.model.ArmPosition
 import com.example.adaptapp.repository.PositionRepository
@@ -50,7 +51,9 @@ fun HomeScreen(
     voiceEnabled: Boolean,
     onVoiceToggle: ((Boolean) -> Unit)?,
     onEnterSetup: () -> Unit,
-    onOpenDrawer: () -> Unit
+    onOpenDrawer: () -> Unit,
+    alignmentStatus: AlignmentStatus = AlignmentStatus.NOT_ALIGNED,
+    onAlignTap: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val connectionState by connection.connectionState.collectAsState()
@@ -69,7 +72,9 @@ fun HomeScreen(
     }
     val safePosition = remember(allPositions) { allPositions.find { it.isSafe } }
 
-    val canTap = isConnected && !controller.isStopped && voiceState?.status != VoiceStatus.EXECUTING
+    val canTap = isConnected && !controller.isStopped
+        && voiceState?.status != VoiceStatus.EXECUTING
+        && alignmentStatus != AlignmentStatus.ALIGNING
 
     Column(
         modifier = Modifier
@@ -103,7 +108,16 @@ fun HomeScreen(
             currentMode = currentMode
         )
 
-        // 3. VoiceStatusBar
+        // 3. AlignmentBar
+        Spacer(modifier = Modifier.height(6.dp))
+        HomeAlignmentBar(
+            status = alignmentStatus,
+            isConnected = isConnected,
+            isStopped = controller.isStopped,
+            onAlignTap = onAlignTap
+        )
+
+        // 4. VoiceStatusBar
         if (voiceEnabled && voiceState != null && voiceState.status != VoiceStatus.PAUSED) {
             Spacer(modifier = Modifier.height(6.dp))
             HomeVoiceStatusBar(voiceState)
@@ -377,6 +391,76 @@ private fun HomeConnectionBar(
                 modifier = Modifier.height(28.dp)
             ) {
                 Text(altLabel, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AdaptBlue)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeAlignmentBar(
+    status: AlignmentStatus,
+    isConnected: Boolean,
+    isStopped: Boolean,
+    onAlignTap: () -> Unit
+) {
+    val (dotColor, label) = when (status) {
+        AlignmentStatus.NOT_ALIGNED -> AdaptGrayDark to "Phone not aligned"
+        AlignmentStatus.ALIGNING -> AdaptBlue to "Aligning..."
+        AlignmentStatus.ALIGNED -> AdaptGreen to "Aligned"
+        AlignmentStatus.FAILED -> AdaptRed to "Alignment failed"
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(AdaptGray)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .background(dotColor, RoundedCornerShape(4.dp))
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(label, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = dotColor)
+        Spacer(modifier = Modifier.weight(1f))
+
+        when (status) {
+            AlignmentStatus.NOT_ALIGNED, AlignmentStatus.FAILED -> {
+                TextButton(
+                    onClick = onAlignTap,
+                    enabled = isConnected && !isStopped,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Text(
+                        if (status == AlignmentStatus.FAILED) "RETRY" else "ALIGN",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isConnected && !isStopped) AdaptBlue else AdaptGrayDark
+                    )
+                }
+            }
+            AlignmentStatus.ALIGNING -> {
+                Text("Working...", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AdaptGrayDark)
+            }
+            AlignmentStatus.ALIGNED -> {
+                // 已对齐状态下可以点击重新校正
+                TextButton(
+                    onClick = onAlignTap,
+                    enabled = isConnected && !isStopped,
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+                    modifier = Modifier.height(28.dp)
+                ) {
+                    Text(
+                        "RE-ALIGN",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isConnected && !isStopped) AdaptGrayDark else Color(0xFFBDBDBD)
+                    )
+                }
             }
         }
     }

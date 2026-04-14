@@ -43,9 +43,13 @@ fun DebugScreen(
         connection.send(json)
     }
 
-    LaunchedEffect(Unit) {
-        connection.setOnReceiveCallback { message ->
-            logMessages.add("<<< $message")
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    DisposableEffect(connection) {
+        connection.addOnReceiveListener("debug") { message ->
+            mainHandler.post { logMessages.add("<<< $message") }
+        }
+        onDispose {
+            connection.removeOnReceiveListener("debug")
         }
     }
 

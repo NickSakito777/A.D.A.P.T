@@ -28,7 +28,7 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
 
     private var serialPort: UsbSerialPort? = null
     private var ioManager: SerialInputOutputManager? = null
-    private var receiveCallback: ((String) -> Unit)? = null
+    private val receiveListeners = mutableMapOf<String, (String) -> Unit>()
 
     // 接收缓冲区（ESP32 可能分多次发送一条 JSON）
     private val receiveBuffer = StringBuilder()
@@ -46,11 +46,11 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
                 val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
 
                 if (granted && device != null) {
-                    receiveCallback?.invoke("[INFO] USB 权限已授予，正在连接...")
+                    notifyListeners("[INFO] USB 权限已授予，正在连接...")
                     openConnection(device)
                 } else {
                     _connectionState.value = ConnectionState.DISCONNECTED
-                    receiveCallback?.invoke("[ERROR] USB 权限被拒绝")
+                    notifyListeners("[ERROR] USB 权限被拒绝")
                 }
             }
         }
@@ -68,7 +68,7 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
 
         if (availableDrivers.isEmpty()) {
             _connectionState.value = ConnectionState.DISCONNECTED
-            receiveCallback?.invoke("[ERROR] 未找到 USB 设备，请检查 USB 连接")
+            notifyListeners("[ERROR] 未找到 USB 设备，请检查 USB 连接")
             return
         }
 
@@ -80,7 +80,7 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
             openConnection(device)
         } else {
             // 请求 USB 权限（系统会弹出授权对话框）
-            receiveCallback?.invoke("[INFO] 正在请求 USB 权限...")
+            notifyListeners("[INFO] 正在请求 USB 权限...")
             registerReceiver()
             val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
                 PendingIntent.FLAG_MUTABLE else 0
@@ -98,14 +98,14 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
             val availableDrivers = UsbSerialProber.getDefaultProber().findAllDrivers(usbManager)
             val driver = availableDrivers.find { it.device == device } ?: run {
                 _connectionState.value = ConnectionState.DISCONNECTED
-                receiveCallback?.invoke("[ERROR] USB 设备丢失")
+                notifyListeners("[ERROR] USB 设备丢失")
                 return
             }
 
             val connection = usbManager.openDevice(device)
             if (connection == null) {
                 _connectionState.value = ConnectionState.DISCONNECTED
-                receiveCallback?.invoke("[ERROR] 无法打开 USB 设备")
+                notifyListeners("[ERROR] 无法打开 USB 设备")
                 return
             }
 
@@ -137,14 +137,14 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
                     for (i in 0 until lines.size - 1) {
                         val line = lines[i].trim()
                         if (line.isNotEmpty()) {
-                            receiveCallback?.invoke(line)
+                            notifyListeners(line)
                         }
                     }
                 }
 
                 override fun onRunError(e: Exception) {
                     _connectionState.value = ConnectionState.DISCONNECTED
-                    receiveCallback?.invoke("[ERROR] USB 连接断开: ${e.message}")
+                    notifyListeners("[ERROR] USB 连接断开: ${e.message}")
                 }
             }
 
@@ -153,11 +153,11 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
             }
 
             _connectionState.value = ConnectionState.CONNECTED
-            receiveCallback?.invoke("[INFO] USB 已连接: ${device.deviceName}")
+            notifyListeners("[INFO] USB 已连接: ${device.deviceName}")
 
         } catch (e: IOException) {
             _connectionState.value = ConnectionState.DISCONNECTED
-            receiveCallback?.invoke("[ERROR] USB 连接失败: ${e.message}")
+            notifyListeners("[ERROR] USB 连接失败: ${e.message}")
         }
     }
 
@@ -173,7 +173,7 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
             receiveBuffer.clear()
             unregisterReceiver()
             _connectionState.value = ConnectionState.DISCONNECTED
-            receiveCallback?.invoke("[INFO] USB 已断开")
+            notifyListeners("[INFO] USB 已断开")
         } catch (e: IOException) {
             // 关闭时忽略异常
         }
@@ -182,7 +182,7 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
     override fun send(json: String) {
         val port = serialPort
         if (port == null || _connectionState.value != ConnectionState.CONNECTED) {
-            receiveCallback?.invoke("[ERROR] 未连接，无法发送")
+            notifyListeners("[ERROR] 未连接，无法发送")
             return
         }
 
@@ -191,13 +191,22 @@ class UsbSerialManager(private val context: Context) : ConnectionManager {
             val data = (json + "\n").toByteArray()
             port.write(data, 1000) // 1 秒超时
         } catch (e: IOException) {
-            receiveCallback?.invoke("[ERROR] 发送失败: ${e.message}")
+            notifyListeners("[ERROR] 发送失败: ${e.message}")
             _connectionState.value = ConnectionState.DISCONNECTED
         }
     }
 
-    override fun setOnReceiveCallback(callback: (String) -> Unit) {
-        receiveCallback = callback
+    override fun addOnReceiveListener(key: String, callback: (String) -> Unit) {
+        synchronized(receiveListeners) { receiveListeners[key] = callback }
+    }
+
+    override fun removeOnReceiveListener(key: String) {
+        synchronized(receiveListeners) { receiveListeners.remove(key) }
+    }
+
+    private fun notifyListeners(message: String) {
+        val snapshot = synchronized(receiveListeners) { receiveListeners.values.toList() }
+        snapshot.forEach { it(message) }
     }
 
     private fun registerReceiver() {

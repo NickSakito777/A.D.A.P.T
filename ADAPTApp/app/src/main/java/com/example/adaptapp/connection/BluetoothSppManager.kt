@@ -41,7 +41,7 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
 
     private var socket: BluetoothSocket? = null
     private var readThread: Thread? = null
-    private var receiveCallback: ((String) -> Unit)? = null
+    private val receiveListeners = mutableMapOf<String, (String) -> Unit>()
 
     // 扫描相关
     private var discoveryReceiver: BroadcastReceiver? = null
@@ -81,7 +81,7 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
         } else {
             // 未找到目标设备，通知 UI 弹出设备选择
             _connectionState.value = ConnectionState.DISCONNECTED
-            receiveCallback?.invoke("[NEED_DEVICE_PICKER]")
+            notifyListeners("[NEED_DEVICE_PICKER]")
         }
     }
 
@@ -94,7 +94,7 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
         val adapter = getAdapter()
         if (adapter == null || !adapter.isEnabled) {
             _connectionState.value = ConnectionState.DISCONNECTED
-            receiveCallback?.invoke("[ERROR] Bluetooth is not available or not enabled / 蓝牙未开启")
+            notifyListeners("[ERROR] Bluetooth is not available or not enabled / 蓝牙未开启")
             return
         }
 
@@ -104,7 +104,7 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
         Thread {
             try {
                 val deviceName = device.name ?: address
-                receiveCallback?.invoke("[INFO] Connecting to $deviceName...")
+                notifyListeners("[INFO] Connecting to $deviceName...")
 
                 // 停止扫描以加快连接
                 stopDiscovery()
@@ -114,14 +114,14 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
 
                 socket = btSocket
                 _connectionState.value = ConnectionState.CONNECTED
-                receiveCallback?.invoke("[INFO] Bluetooth connected: $deviceName")
+                notifyListeners("[INFO] Bluetooth connected: $deviceName")
 
                 // 启动后台读取线程
                 startReadThread(btSocket.inputStream)
 
             } catch (e: IOException) {
                 _connectionState.value = ConnectionState.DISCONNECTED
-                receiveCallback?.invoke("[ERROR] Bluetooth connection failed: ${e.message}")
+                notifyListeners("[ERROR] Bluetooth connection failed: ${e.message}")
             }
         }.start()
     }
@@ -251,7 +251,7 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
             socket = null
 
             _connectionState.value = ConnectionState.DISCONNECTED
-            receiveCallback?.invoke("[INFO] Bluetooth disconnected")
+            notifyListeners("[INFO] Bluetooth disconnected")
         } catch (_: IOException) {
             // 关闭时忽略异常
         }
@@ -260,7 +260,7 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
     override fun send(json: String) {
         val s = socket
         if (s == null || _connectionState.value != ConnectionState.CONNECTED) {
-            receiveCallback?.invoke("[ERROR] Not connected, cannot send / 未连接，无法发送")
+            notifyListeners("[ERROR] Not connected, cannot send / 未连接，无法发送")
             return
         }
 
@@ -269,13 +269,22 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
             s.outputStream.write((json + "\n").toByteArray())
             s.outputStream.flush()
         } catch (e: IOException) {
-            receiveCallback?.invoke("[ERROR] Send failed: ${e.message}")
+            notifyListeners("[ERROR] Send failed: ${e.message}")
             _connectionState.value = ConnectionState.DISCONNECTED
         }
     }
 
-    override fun setOnReceiveCallback(callback: (String) -> Unit) {
-        receiveCallback = callback
+    override fun addOnReceiveListener(key: String, callback: (String) -> Unit) {
+        synchronized(receiveListeners) { receiveListeners[key] = callback }
+    }
+
+    override fun removeOnReceiveListener(key: String) {
+        synchronized(receiveListeners) { receiveListeners.remove(key) }
+    }
+
+    private fun notifyListeners(message: String) {
+        val snapshot = synchronized(receiveListeners) { receiveListeners.values.toList() }
+        snapshot.forEach { it(message) }
     }
 
     // 后台读取蓝牙数据，按换行符拆分 JSON 消息
@@ -303,14 +312,14 @@ class BluetoothSppManager(private val context: Context) : ConnectionManager {
                     for (i in 0 until lines.size - 1) {
                         val line = lines[i].trim()
                         if (line.isNotEmpty()) {
-                            receiveCallback?.invoke(line)
+                            notifyListeners(line)
                         }
                     }
                 }
             } catch (e: IOException) {
                 if (_connectionState.value == ConnectionState.CONNECTED) {
                     _connectionState.value = ConnectionState.DISCONNECTED
-                    receiveCallback?.invoke("[ERROR] Bluetooth disconnected: ${e.message}")
+                    notifyListeners("[ERROR] Bluetooth disconnected: ${e.message}")
                 }
             }
         }.apply {
