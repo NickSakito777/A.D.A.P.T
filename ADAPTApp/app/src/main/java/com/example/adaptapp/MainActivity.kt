@@ -268,6 +268,7 @@ class MainActivity : ComponentActivity() {
                             Screen.SETUP -> SetupScreen(
                                 connection = activeConnection,
                                 controller = armController,
+                                autoLevelController = autoLevelController,
                                 repository = positionRepository,
                                 onExit = { currentScreen = Screen.POSITIONS }
                             )

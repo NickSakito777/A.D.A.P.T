@@ -18,20 +18,24 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.adaptapp.connection.ConnectionManager
+import com.example.adaptapp.controller.AlignmentStatus
 import com.example.adaptapp.controller.ArmController
+import com.example.adaptapp.controller.AutoLevelController
 import com.example.adaptapp.model.ArmPosition
+import com.example.adaptapp.model.SessionBaseline
 import com.example.adaptapp.repository.PositionRepository
 import com.example.adaptapp.ui.component.EmergencyStopButton
 import com.example.adaptapp.ui.theme.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-enum class SetupStep { CONFIRM, DRAG, SAVE }
+enum class SetupStep { CONFIRM, DRAG, ALIGN, SAVE }
 
 @Composable
 fun SetupScreen(
     connection: ConnectionManager,
     controller: ArmController,
+    autoLevelController: AutoLevelController,
     repository: PositionRepository,
     onExit: () -> Unit
 ) {
@@ -70,12 +74,17 @@ fun SetupScreen(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (step == SetupStep.SAVE) {
+            if (step == SetupStep.ALIGN || step == SetupStep.SAVE) {
                 IconButton(onClick = {
-                    // Go back to DRAG, re-release torque
-                    scope.launch {
-                        controller.setTorque(false)
-                        step = SetupStep.DRAG
+                    if (step == SetupStep.SAVE) {
+                        step = SetupStep.ALIGN
+                    } else {
+                        // ALIGN → back to DRAG, re-release torque
+                        scope.launch {
+                            autoLevelController.reset()
+                            controller.setTorque(false)
+                            step = SetupStep.DRAG
+                        }
                     }
                 }) {
                     Icon(Icons.Default.ArrowBack, contentDescription = "Back")
@@ -216,7 +225,7 @@ fun SetupScreen(
                                     delay(500)
                                     controller.setRollTorque(false)
                                     delay(300)
-                                    step = SetupStep.SAVE
+                                    step = SetupStep.ALIGN
                                 }
                             },
                             modifier = Modifier
@@ -226,8 +235,98 @@ fun SetupScreen(
                             colors = ButtonDefaults.buttonColors(containerColor = AdaptBlue)
                         ) {
                             Text(
-                                "SAVE",
+                                "NEXT",
                                 fontSize = 20.sp,
+                                color = AdaptWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                SetupStep.ALIGN -> {
+                    val alignStatus by autoLevelController.status.collectAsState()
+                    var isLandscape by remember { mutableStateOf(false) }
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text(
+                            "Align the phone before saving.",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AdaptTextPrimary,
+                            lineHeight = 22.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+
+                        // ALIGN 按钮
+                        Button(
+                            onClick = { autoLevelController.start() },
+                            enabled = alignStatus != AlignmentStatus.ALIGNING,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = when (alignStatus) {
+                                    AlignmentStatus.ALIGNED -> AdaptGreen
+                                    AlignmentStatus.FAILED -> AdaptRed
+                                    AlignmentStatus.ALIGNING -> Color(0xFFBDBDBD)
+                                    else -> AdaptBlue
+                                }
+                            )
+                        ) {
+                            Text(
+                                when (alignStatus) {
+                                    AlignmentStatus.ALIGNING -> "ALIGNING..."
+                                    AlignmentStatus.ALIGNED -> "ALIGNED ✓"
+                                    AlignmentStatus.FAILED -> "FAILED — TAP TO RETRY"
+                                    else -> "ALIGN"
+                                },
+                                fontSize = 18.sp,
+                                color = AdaptWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Portrait / Landscape 切换
+                        Button(
+                            onClick = { isLandscape = !isLandscape },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xFF455A64)
+                            )
+                        ) {
+                            Text(
+                                if (isLandscape) "LANDSCAPE" else "PORTRAIT",
+                                fontSize = 18.sp,
+                                color = AdaptWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(32.dp))
+
+                        // NEXT 按钮 → 进入 SAVE
+                        Button(
+                            onClick = { step = SetupStep.SAVE },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AdaptBlue)
+                        ) {
+                            Text(
+                                "NEXT",
+                                fontSize = 18.sp,
                                 color = AdaptWhite,
                                 fontWeight = FontWeight.Bold
                             )
@@ -310,7 +409,12 @@ fun SetupScreen(
 
                                     val parsed = ArmController.parseFeedback(lastResponse)
                                     if (parsed != null) {
-                                        val position = parsed.copy(name = name, isSafe = isSafe)
+                                        val baseline = SessionBaseline.rollDeg
+                                        // 有 baseline → 存 offset；没有 → p=null（recall 时不动 roll）
+                                        val rollOffset = if (baseline != null && parsed.p != null) {
+                                            parsed.p!! - baseline
+                                        } else null
+                                        val position = parsed.copy(name = name, isSafe = isSafe, p = rollOffset)
                                         repository.save(position)
                                         controller.setRollTorque(true)
                                         onExit()
@@ -352,6 +456,7 @@ fun StepIndicator(current: SetupStep) {
     val steps = listOf(
         "Confirm" to SetupStep.CONFIRM,
         "Drag" to SetupStep.DRAG,
+        "Align" to SetupStep.ALIGN,
         "Save" to SetupStep.SAVE
     )
 

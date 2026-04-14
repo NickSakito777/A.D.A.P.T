@@ -32,9 +32,12 @@ class ArmController(var connection: ConnectionManager) {
         send("""{"T":102,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
 
         // Phone Roll — 延后 50ms，等 T:102 被固件主循环处理
-        position.p?.let { roll ->
+        // p 存的是相对 baseline 的 offset，recall 时还原为绝对角度
+        position.p?.let { rollOffset ->
+            val baseline = SessionBaseline.rollDeg ?: return@let
+            val absolute = baseline + rollOffset
             handler.postDelayed({
-                if (!isStopped) send("""{"T":700,"angle":$roll}""")
+                if (!isStopped) sendRollAbsolute(absolute)
             }, 50)
         }
 

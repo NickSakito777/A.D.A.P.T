@@ -13,6 +13,7 @@ import com.example.adaptapp.connection.ConnectionState
 import com.example.adaptapp.controller.ArmController
 import com.example.adaptapp.controller.StepAdjustmentController
 import com.example.adaptapp.model.ArmPosition
+import com.example.adaptapp.model.SessionBaseline
 import com.example.adaptapp.repository.PositionRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -122,6 +123,12 @@ class VoiceCommandHandler(
     fun onFeedbackReceived(position: ArmPosition) {
         lastFeedback = position
         lastFeedbackTimestampMs = System.currentTimeMillis()
+        Log.i(
+            TAG,
+            "Feedback update: b=${position.b}, s=${position.s}, e=${position.e}, " +
+                "t=${position.t}, p=${position.p}, tilt=${position.tilt}, " +
+                "state=${_voiceState.value.status}"
+        )
 
         // 如果有等待 fresh feedback 的 adjust 命令，在主线程执行
         val action = pendingAdjustAction
@@ -153,6 +160,7 @@ class VoiceCommandHandler(
     fun invalidateFeedback() {
         lastFeedback = null
         lastFeedbackTimestampMs = 0L
+        Log.i(TAG, "Feedback invalidated")
     }
 
     // === 外部调用入口 ===
@@ -254,24 +262,9 @@ class VoiceCommandHandler(
         when (result) {
             is CommandMatcher.MatchResult.EmergencyStop -> handleEmergencyStop()
             is CommandMatcher.MatchResult.Cancel -> handleCancel()
-            is CommandMatcher.MatchResult.Landscape -> {
-                if (!isAligned()) {
-                    stopSpeechRecognizer()
-                    returnToIdle()
-                    feedback.speak("Please align the phone first")
-                    return
-                }
-                executeImmediate("Landscape mode") { armController.setPhoneMode(true) }
-            }
-            is CommandMatcher.MatchResult.Portrait -> {
-                if (!isAligned()) {
-                    stopSpeechRecognizer()
-                    returnToIdle()
-                    feedback.speak("Please align the phone first")
-                    return
-                }
-                executeImmediate("Portrait mode") { armController.setPhoneMode(false) }
-            }
+            is CommandMatcher.MatchResult.Landscape -> executeAbsoluteRoll("Landscape mode", 90.0)
+            is CommandMatcher.MatchResult.Portrait -> executeAbsoluteRoll("Portrait mode", 0.0)
+            is CommandMatcher.MatchResult.Rotate -> executeRotate90("Rotating")
             is CommandMatcher.MatchResult.AdjustLeft -> executeAdjustment("Adjusting left") { fb -> stepController.adjustLeft(fb) }
             is CommandMatcher.MatchResult.AdjustRight -> executeAdjustment("Adjusting right") { fb -> stepController.adjustRight(fb) }
             is CommandMatcher.MatchResult.AdjustUp -> executeAdjustment("Adjusting up") { fb -> stepController.adjustUp(fb) }
@@ -392,6 +385,11 @@ class VoiceCommandHandler(
 
         when (action) {
             is PendingAction.MoveToPosition -> {
+                if (SessionBaseline.rollDeg == null && action.position.p != null) {
+                    feedback.speak("Please align the phone first")
+                    returnToIdle()
+                    return
+                }
                 armController.moveTo(action.position)
                 positionRepository.recordUsage(action.name)
                 feedback.speak("Moving to ${action.name}")
@@ -416,6 +414,87 @@ class VoiceCommandHandler(
         command()
         srFailureCount = 0
         // openWakeWord 和 TTS 可共存，直接恢复待命
+        returnToIdle()
+        feedback.speak(ttsMessage)
+    }
+
+    private fun executeRotate90(ttsMessage: String) {
+        if (!isAligned()) {
+            Log.w(TAG, "Rotate90 blocked: phone not aligned")
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please align the phone first")
+            return
+        }
+        if (positionRepository.getAll().none { it.isSafe }) {
+            Log.w(TAG, "Rotate90 blocked: no safe position defined")
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please define a safe position first")
+            return
+        }
+
+        val nowMs = System.currentTimeMillis()
+        val feedbackSnapshot = lastFeedback
+        val ageMs =
+            if (lastFeedbackTimestampMs == 0L) Long.MAX_VALUE
+            else nowMs - lastFeedbackTimestampMs
+        val isFresh = ageMs <= FEEDBACK_FRESHNESS_MS
+        val currentRoll = feedbackSnapshot?.p
+        Log.i(
+            TAG,
+            "Rotate90 check: isFresh=$isFresh, ageMs=$ageMs, " +
+                "lastFeedbackTs=$lastFeedbackTimestampMs, currentRoll=$currentRoll, " +
+                "feedback=$feedbackSnapshot"
+        )
+        if (!isFresh) {
+            Log.w(TAG, "Rotate90 using stale feedback: ageMs=$ageMs")
+        }
+        if (currentRoll == null) {
+            Log.w(
+                TAG,
+                "Rotate90 unavailable: " +
+                    "reason=missing_roll, " +
+                    "requesting fresh feedback"
+            )
+            stopSpeechRecognizer()
+            armController.readFeedback()
+            returnToIdle()
+            feedback.speak("Position data not available, please try again")
+            return
+        }
+
+        val targetRoll = currentRoll + 90.0
+        Log.i(TAG, "Rotate90 command: currentRoll=$currentRoll -> targetRoll=$targetRoll")
+        armController.sendRollAbsolute(targetRoll)
+        Log.i(TAG, "Rotate90 scheduled feedback refresh in 1500ms")
+        handler.postDelayed({ armController.readFeedback() }, 1500)
+        srFailureCount = 0
+        returnToIdle()
+        feedback.speak(ttsMessage)
+    }
+
+    private fun executeAbsoluteRoll(ttsMessage: String, targetRoll: Double) {
+        if (!isAligned()) {
+            Log.w(TAG, "Absolute roll blocked: phone not aligned")
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please align the phone first")
+            return
+        }
+        if (positionRepository.getAll().none { it.isSafe }) {
+            Log.w(TAG, "Absolute roll blocked: no safe position defined")
+            stopSpeechRecognizer()
+            returnToIdle()
+            feedback.speak("Please define a safe position first")
+            return
+        }
+
+        Log.i(TAG, "Absolute roll command: targetRoll=$targetRoll")
+        armController.sendRollAbsolute(targetRoll)
+        Log.i(TAG, "Absolute roll scheduled feedback refresh in 1500ms")
+        handler.postDelayed({ armController.readFeedback() }, 1500)
+        srFailureCount = 0
         returnToIdle()
         feedback.speak(ttsMessage)
     }

@@ -11,6 +11,7 @@ class CommandMatcher {
         data object Cancel : MatchResult()
         data object Landscape : MatchResult()
         data object Portrait : MatchResult()
+        data object Rotate : MatchResult()
         data object FoldArm : MatchResult()
         data object AdjustLeft : MatchResult()
         data object AdjustRight : MatchResult()
@@ -41,6 +42,7 @@ class CommandMatcher {
         // 3. 横屏 / 竖屏
         if (lower.contains("landscape")) return MatchResult.Landscape
         if (lower.contains("portrait")) return MatchResult.Portrait
+        if (lower.contains("rotate")) return MatchResult.Rotate
 
         // 4. 微调命令 — adjust / tilt
         // "adjust" 和 "nudge" 是明确的微调前缀，不会和 "move to [position]" 冲突
