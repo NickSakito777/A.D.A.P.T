@@ -54,6 +54,8 @@ class AutoLevelController(
     fun start() {
         if (_status.value == AlignmentStatus.ALIGNING) return
         job?.cancel()
+        // 确保 roll 扭矩开启，否则 servo 无法转动
+        armController.setRollTorque(true)
         SessionBaseline.clear()
         pendingFeedbackRoll = null
         _status.value = AlignmentStatus.ALIGNING

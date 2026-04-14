@@ -792,6 +792,15 @@ void cartesian_to_polar(double x, double y, double *r, double *theta) {
 
 // 你在回答的过程中可以告诉我你还有什么其它需要的信息。
 // '''
+// Recompute derived IK quantities from raw link parameters.
+// Must be called after any runtime update to l1/l2A/l2B/l3A/l3B.
+void recalcIkDerivedParams() {
+  l2 = sqrt(l2A * l2A + l2B * l2B);
+  t2rad = atan2(l2B, l2A);
+  l3 = sqrt(l3A * l3A + l3B * l3B);
+  t3rad = atan2(l3B, l3A);
+}
+
 // use this two functions to compute the position of coordinate point
 // by inputing the jointRad.
 // 这个函数用于将极坐标转换为直角坐标
@@ -1785,7 +1794,7 @@ void endEffectorRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
     if (error > 2048) error -= 4096;
     if (error < -2048) error += 4096;
 
-    if (abs(error) < 15) break; // ~1.3°
+    if (abs(error) < 5) break; // ~0.44°
 
     s16 spd = error / 2;
     if (spd > 500) spd = 500;
@@ -1919,7 +1928,7 @@ void phoneTiltRotate(double angleDegrees, u16 speed, u8 acc, bool lockAfter) {
     }
 
     // Close enough — stop
-    if (abs(error) < 15) break; // ~1.3°
+    if (abs(error) < 5) break; // ~0.44°
 
     // P-controller with speed limits
     s16 spd = error / 2;

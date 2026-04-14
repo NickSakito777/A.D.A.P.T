@@ -84,12 +84,24 @@ class VoiceCommandHandler(
     private var pendingAdjustAction: ((ArmPosition) -> StepAdjustmentController.AdjustResult)? = null
     @Volatile
     private var pendingAdjustTtsMessage: String? = null
+    @Volatile
+    private var pendingRotateTtsMessage: String? = null
+    @Volatile
+    private var pendingRotateDegrees: Double = 103.0
     private var adjustFeedbackRequestTimestampMs: Long = 0L
     private val adjustFeedbackTimeoutRunnable = Runnable {
         if (pendingAdjustAction != null) {
             Log.w(TAG, "Adjust feedback timeout")
             pendingAdjustAction = null
             pendingAdjustTtsMessage = null
+            returnToIdle()
+            feedback.speak("Position data not available, please try again")
+        }
+    }
+    private val rotateFeedbackTimeoutRunnable = Runnable {
+        if (pendingRotateTtsMessage != null) {
+            Log.w(TAG, "Rotate90 feedback timeout")
+            pendingRotateTtsMessage = null
             returnToIdle()
             feedback.speak("Position data not available, please try again")
         }
@@ -130,6 +142,31 @@ class VoiceCommandHandler(
                 "state=${_voiceState.value.status}"
         )
 
+        val rotateTts = pendingRotateTtsMessage
+        if (rotateTts != null) {
+            handler.post {
+                handler.removeCallbacks(rotateFeedbackTimeoutRunnable)
+                val currentTts = pendingRotateTtsMessage ?: return@post
+                pendingRotateTtsMessage = null
+                val currentRoll = position.p
+                if (currentRoll == null) {
+                    Log.w(TAG, "Rotate90 unavailable: reason=missing_roll")
+                    returnToIdle()
+                    feedback.speak("Position data not available, please try again")
+                    return@post
+                }
+                val targetRoll = currentRoll + pendingRotateDegrees
+                Log.i(TAG, "Rotate90 callback: currentRoll=$currentRoll -> targetRoll=$targetRoll")
+                armController.sendRollAbsolute(targetRoll)
+                Log.i(TAG, "Rotate90 scheduled feedback refresh in 1500ms")
+                handler.postDelayed({ armController.readFeedback() }, 1500)
+                srFailureCount = 0
+                returnToIdle()
+                feedback.speak(currentTts)
+            }
+            return
+        }
+
         // 如果有等待 fresh feedback 的 adjust 命令，在主线程执行
         val action = pendingAdjustAction
         val tts = pendingAdjustTtsMessage
@@ -160,6 +197,7 @@ class VoiceCommandHandler(
     fun invalidateFeedback() {
         lastFeedback = null
         lastFeedbackTimestampMs = 0L
+        pendingRotateTtsMessage = null
         Log.i(TAG, "Feedback invalidated")
     }
 
@@ -171,7 +209,7 @@ class VoiceCommandHandler(
         handler.post {
             Log.i(TAG, "onWakeWord: keyword='$keyword', state=${_voiceState.value.status}")
             when {
-                keyword.equals("stop", ignoreCase = true) -> handleEmergencyStop()
+                matcher.isEmergencyTrigger(keyword) -> handleEmergencyStop()
                 _voiceState.value.status == VoiceStatus.IDLE -> transitionToListening()
             }
         }
@@ -239,8 +277,7 @@ class VoiceCommandHandler(
         }
 
         // 急停优先级最高 — 即使在 alignment 期间也必须响应
-        val lower = text.lowercase()
-        if (lower.contains("stop") || lower.contains("emergency")) {
+        if (matcher.isEmergencyTrigger(text)) {
             handleEmergencyStop()
             return
         }
@@ -262,9 +299,9 @@ class VoiceCommandHandler(
         when (result) {
             is CommandMatcher.MatchResult.EmergencyStop -> handleEmergencyStop()
             is CommandMatcher.MatchResult.Cancel -> handleCancel()
-            is CommandMatcher.MatchResult.Landscape -> executeAbsoluteRoll("Landscape mode", 90.0)
-            is CommandMatcher.MatchResult.Portrait -> executeAbsoluteRoll("Portrait mode", 0.0)
-            is CommandMatcher.MatchResult.Rotate -> executeRotate90("Rotating")
+            is CommandMatcher.MatchResult.Landscape -> executeRotate("Landscape mode", +103.0)
+            is CommandMatcher.MatchResult.Portrait -> executeRotate("Portrait mode", -103.0)
+            is CommandMatcher.MatchResult.Rotate -> executeRotate("Rotating", +103.0)
             is CommandMatcher.MatchResult.AdjustLeft -> executeAdjustment("Adjusting left") { fb -> stepController.adjustLeft(fb) }
             is CommandMatcher.MatchResult.AdjustRight -> executeAdjustment("Adjusting right") { fb -> stepController.adjustRight(fb) }
             is CommandMatcher.MatchResult.AdjustUp -> executeAdjustment("Adjusting up") { fb -> stepController.adjustUp(fb) }
@@ -308,8 +345,7 @@ class VoiceCommandHandler(
 
     // 确认态收到文字
     private fun handleConfirmationResult(text: String) {
-        val lower = text.lowercase()
-        if (lower.contains("stop") || lower.contains("emergency")) {
+        if (matcher.isEmergencyTrigger(text)) {
             handleEmergencyStop()
             return
         }
@@ -326,8 +362,7 @@ class VoiceCommandHandler(
 
     // 歧义态收到文字
     private fun handleDisambiguationResult(text: String) {
-        val lower = text.lowercase()
-        if (lower.contains("stop") || lower.contains("emergency")) {
+        if (matcher.isEmergencyTrigger(text)) {
             handleEmergencyStop()
             return
         }
@@ -418,7 +453,7 @@ class VoiceCommandHandler(
         feedback.speak(ttsMessage)
     }
 
-    private fun executeRotate90(ttsMessage: String) {
+    private fun executeRotate(ttsMessage: String, degrees: Double = 103.0) {
         if (!isAligned()) {
             Log.w(TAG, "Rotate90 blocked: phone not aligned")
             stopSpeechRecognizer()
@@ -434,69 +469,15 @@ class VoiceCommandHandler(
             return
         }
 
-        val nowMs = System.currentTimeMillis()
-        val feedbackSnapshot = lastFeedback
-        val ageMs =
-            if (lastFeedbackTimestampMs == 0L) Long.MAX_VALUE
-            else nowMs - lastFeedbackTimestampMs
-        val isFresh = ageMs <= FEEDBACK_FRESHNESS_MS
-        val currentRoll = feedbackSnapshot?.p
         Log.i(
             TAG,
-            "Rotate90 check: isFresh=$isFresh, ageMs=$ageMs, " +
-                "lastFeedbackTs=$lastFeedbackTimestampMs, currentRoll=$currentRoll, " +
-                "feedback=$feedbackSnapshot"
+            "Rotate90 request: requesting current roll feedback, " +
+                "lastFeedbackTs=$lastFeedbackTimestampMs, lastFeedback=$lastFeedback"
         )
-        if (!isFresh) {
-            Log.w(TAG, "Rotate90 using stale feedback: ageMs=$ageMs")
-        }
-        if (currentRoll == null) {
-            Log.w(
-                TAG,
-                "Rotate90 unavailable: " +
-                    "reason=missing_roll, " +
-                    "requesting fresh feedback"
-            )
-            stopSpeechRecognizer()
-            armController.readFeedback()
-            returnToIdle()
-            feedback.speak("Position data not available, please try again")
-            return
-        }
-
-        val targetRoll = currentRoll + 90.0
-        Log.i(TAG, "Rotate90 command: currentRoll=$currentRoll -> targetRoll=$targetRoll")
-        armController.sendRollAbsolute(targetRoll)
-        Log.i(TAG, "Rotate90 scheduled feedback refresh in 1500ms")
-        handler.postDelayed({ armController.readFeedback() }, 1500)
-        srFailureCount = 0
-        returnToIdle()
-        feedback.speak(ttsMessage)
-    }
-
-    private fun executeAbsoluteRoll(ttsMessage: String, targetRoll: Double) {
-        if (!isAligned()) {
-            Log.w(TAG, "Absolute roll blocked: phone not aligned")
-            stopSpeechRecognizer()
-            returnToIdle()
-            feedback.speak("Please align the phone first")
-            return
-        }
-        if (positionRepository.getAll().none { it.isSafe }) {
-            Log.w(TAG, "Absolute roll blocked: no safe position defined")
-            stopSpeechRecognizer()
-            returnToIdle()
-            feedback.speak("Please define a safe position first")
-            return
-        }
-
-        Log.i(TAG, "Absolute roll command: targetRoll=$targetRoll")
-        armController.sendRollAbsolute(targetRoll)
-        Log.i(TAG, "Absolute roll scheduled feedback refresh in 1500ms")
-        handler.postDelayed({ armController.readFeedback() }, 1500)
-        srFailureCount = 0
-        returnToIdle()
-        feedback.speak(ttsMessage)
+        pendingRotateTtsMessage = ttsMessage
+        pendingRotateDegrees = degrees
+        armController.readFeedback()
+        handler.postDelayed(rotateFeedbackTimeoutRunnable, ADJUST_FEEDBACK_TIMEOUT_MS)
     }
 
     // 执行微调命令 — 先请求 fresh feedback，等回包后再执行

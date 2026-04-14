@@ -4,6 +4,10 @@ package com.example.adaptapp.voice
 // Voice command matcher — intent classification + fuzzy position name matching
 class CommandMatcher {
 
+    companion object {
+        private const val EMERGENCY_TRIGGER_PHRASE = "stop abort"
+    }
+
     // 匹配结果
     // Match result
     sealed class MatchResult {
@@ -27,10 +31,10 @@ class CommandMatcher {
     // 从语音文本中匹配命令
     // Match command from speech text
     fun match(text: String, positionNames: List<String>): MatchResult {
-        val lower = text.lowercase().trim()
+        val lower = normalize(text)
 
         // 1. 急停 — 最高优先级
-        if (lower.contains("stop") || lower.contains("emergency")) {
+        if (lower.contains(EMERGENCY_TRIGGER_PHRASE)) {
             return MatchResult.EmergencyStop
         }
 
@@ -78,14 +82,16 @@ class CommandMatcher {
     // 判断确认态下用户的回答
     // Classify confirmation response
     fun isConfirmation(text: String): Boolean {
-        val lower = text.lowercase().trim()
+        val lower = normalize(text)
         return lower in listOf("yes", "yeah", "yep", "confirm", "do it", "sure", "ok", "okay")
     }
 
     fun isDenial(text: String): Boolean {
-        val lower = text.lowercase().trim()
-        return lower in listOf("no", "nope", "cancel", "never mind", "stop")
+        val lower = normalize(text)
+        return lower in listOf("no", "nope", "cancel", "never mind")
     }
+
+    fun isEmergencyTrigger(text: String): Boolean = normalize(text).contains(EMERGENCY_TRIGGER_PHRASE)
 
     // 从 "go to reading" / "move to drinking" 中提取位置名部分
     // Extract position name from phrases like "go to reading"
@@ -229,4 +235,7 @@ class CommandMatcher {
         }
         return dp[m][n]
     }
+
+    private fun normalize(text: String): String =
+        text.lowercase().trim().replace(Regex("\\s+"), " ")
 }
