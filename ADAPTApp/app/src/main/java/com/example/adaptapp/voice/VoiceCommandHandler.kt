@@ -420,11 +420,6 @@ class VoiceCommandHandler(
 
         when (action) {
             is PendingAction.MoveToPosition -> {
-                if (SessionBaseline.rollDeg == null && action.position.p != null) {
-                    feedback.speak("Please align the phone first")
-                    returnToIdle()
-                    return
-                }
                 armController.moveTo(action.position)
                 positionRepository.recordUsage(action.name)
                 feedback.speak("Moving to ${action.name}")
@@ -454,13 +449,6 @@ class VoiceCommandHandler(
     }
 
     private fun executeRotate(ttsMessage: String, degrees: Double = 103.0) {
-        if (!isAligned()) {
-            Log.w(TAG, "Rotate90 blocked: phone not aligned")
-            stopSpeechRecognizer()
-            returnToIdle()
-            feedback.speak("Please align the phone first")
-            return
-        }
         if (positionRepository.getAll().none { it.isSafe }) {
             Log.w(TAG, "Rotate90 blocked: no safe position defined")
             stopSpeechRecognizer()

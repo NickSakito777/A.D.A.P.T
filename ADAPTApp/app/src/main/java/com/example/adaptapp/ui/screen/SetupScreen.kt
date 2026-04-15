@@ -204,12 +204,53 @@ fun SetupScreen(
                 }
 
                 SetupStep.DRAG -> {
+                    var armMoved by remember { mutableStateOf(false) }
+                    var initialPos by remember { mutableStateOf<ArmPosition?>(null) }
+
+                    LaunchedEffect(Unit) {
+                        controller.readFeedback()
+                        delay(600)
+                        initialPos = ArmController.parseFeedback(lastResponse)
+                        while (!armMoved) {
+                            delay(1000)
+                            controller.readFeedback()
+                            delay(600)
+                            val current = ArmController.parseFeedback(lastResponse)
+                            val init = initialPos
+                            if (current != null && init != null) {
+                                val threshold = 0.05
+                                if (Math.abs(current.b - init.b) > threshold ||
+                                    Math.abs(current.s - init.s) > threshold ||
+                                    Math.abs(current.e - init.e) > threshold) {
+                                    armMoved = true
+                                }
+                            }
+                        }
+                    }
+
                     Column(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFF4CAF50), RoundedCornerShape(8.dp))
+                                .padding(vertical = 10.dp, horizontal = 16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                "ARM FREE — Drag to position",
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
                         Text(
-                            "Hold arm in desired position then press save to confirm.",
+                            "Move the arm to your desired position, then tap Lock.",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = AdaptTextPrimary,
@@ -228,16 +269,20 @@ fun SetupScreen(
                                     step = SetupStep.ALIGN
                                 }
                             },
+                            enabled = armMoved,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(72.dp),
                             shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = AdaptBlue)
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = AdaptBlue,
+                                disabledContainerColor = Color(0xFFBDBDBD)
+                            )
                         ) {
                             Text(
-                                "NEXT",
+                                if (armMoved) "LOCK ARM HERE" else "Move arm to enable",
                                 fontSize = 20.sp,
-                                color = AdaptWhite,
+                                color = if (armMoved) AdaptWhite else Color(0xFF757575),
                                 fontWeight = FontWeight.Bold
                             )
                         }

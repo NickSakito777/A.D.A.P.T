@@ -1,5 +1,7 @@
 package com.example.adaptapp.controller
 
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.example.adaptapp.kinematics.ArmKinematics
 import com.example.adaptapp.model.ArmPosition
@@ -8,8 +10,8 @@ class StepAdjustmentController(private val armController: ArmController) {
 
     companion object {
         private const val TAG = "StepAdjust"
-        const val STEP_Y_MM = 10.0
         const val STEP_Z_MM = 10.0
+        const val BASE_STEP_RAD = 0.052  // ~3°
         const val TILT_STEP_DEG = 5.0
         // tilt 方向：在 0°-106° 安全区内，减小角度 = 手机仰角上调
         // 如果实测方向反了，翻转这个符号即可
@@ -17,19 +19,60 @@ class StepAdjustmentController(private val armController: ArmController) {
         // tilt 危险区边界
         const val TILT_DANGER_MIN = 106.0
         const val TILT_DANGER_MAX = 284.0
+        const val TILT_COMPENSATION_DEG = 5.0
+        const val TILT_COMPENSATION_DELAY_MS = 1500L
     }
+
+    private val handler = Handler(Looper.getMainLooper())
 
     sealed class AdjustResult {
         data object Success : AdjustResult()
         data class Failed(val reason: String) : AdjustResult()
     }
 
-    fun adjustLeft(feedback: ArmPosition): AdjustResult = adjustCartesian(feedback, dy = -STEP_Y_MM)
-    fun adjustRight(feedback: ArmPosition): AdjustResult = adjustCartesian(feedback, dy = STEP_Y_MM)
-    fun adjustUp(feedback: ArmPosition): AdjustResult = adjustCartesian(feedback, dz = STEP_Z_MM)
-    fun adjustDown(feedback: ArmPosition): AdjustResult = adjustCartesian(feedback, dz = -STEP_Z_MM)
+    fun adjustLeft(feedback: ArmPosition): AdjustResult {
+        val newBase = feedback.b - BASE_STEP_RAD
+        val target = ArmPosition(name = "", b = newBase, s = feedback.s, e = feedback.e, t = feedback.t)
+        Log.i(TAG, "adjustLeft: base ${feedback.b} -> $newBase")
+        armController.moveTo(target, speed = 200, acc = 10)
+        return AdjustResult.Success
+    }
+
+    fun adjustRight(feedback: ArmPosition): AdjustResult {
+        val newBase = feedback.b + BASE_STEP_RAD
+        val target = ArmPosition(name = "", b = newBase, s = feedback.s, e = feedback.e, t = feedback.t)
+        Log.i(TAG, "adjustRight: base ${feedback.b} -> $newBase")
+        armController.moveTo(target, speed = 200, acc = 10)
+        return AdjustResult.Success
+    }
+    fun adjustUp(feedback: ArmPosition): AdjustResult {
+        val result = adjustCartesian(feedback, dz = STEP_Z_MM)
+        if (result is AdjustResult.Success) {
+            feedback.tilt?.let { currentTilt ->
+                val target = clampTiltSafe(currentTilt + TILT_COMPENSATION_DEG)
+                handler.postDelayed({
+                    if (!armController.isStopped) armController.sendTiltAbsolute(target)
+                }, TILT_COMPENSATION_DELAY_MS)
+            }
+        }
+        return result
+    }
+
+    fun adjustDown(feedback: ArmPosition): AdjustResult {
+        val result = adjustCartesian(feedback, dz = -STEP_Z_MM)
+        if (result is AdjustResult.Success) {
+            feedback.tilt?.let { currentTilt ->
+                val target = clampTiltSafe(currentTilt - TILT_COMPENSATION_DEG)
+                handler.postDelayed({
+                    if (!armController.isStopped) armController.sendTiltAbsolute(target)
+                }, TILT_COMPENSATION_DELAY_MS)
+            }
+        }
+        return result
+    }
 
     fun tiltUp(feedback: ArmPosition): AdjustResult {
+        feedback.p?.let { armController.sendRollAbsolute(it) }
         val currentTilt = feedback.tilt ?: return AdjustResult.Failed("No tilt data")
         val newTilt = clampTiltSafe(currentTilt + TILT_UP_SIGN * TILT_STEP_DEG)
         Log.i(TAG, "tiltUp: $currentTilt -> $newTilt")
@@ -38,6 +81,7 @@ class StepAdjustmentController(private val armController: ArmController) {
     }
 
     fun tiltDown(feedback: ArmPosition): AdjustResult {
+        feedback.p?.let { armController.sendRollAbsolute(it) }
         val currentTilt = feedback.tilt ?: return AdjustResult.Failed("No tilt data")
         val newTilt = clampTiltSafe(currentTilt - TILT_UP_SIGN * TILT_STEP_DEG)
         Log.i(TAG, "tiltDown: $currentTilt -> $newTilt")
