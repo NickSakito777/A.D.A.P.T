@@ -31,21 +31,24 @@ class ArmController(var connection: ConnectionManager) {
         // 臂关节同步移动（fire-and-forget）
         send("""{"T":102,"base":${position.b},"shoulder":${position.s},"elbow":${position.e},"hand":${position.t},"spd":$speed,"acc":$acc}""")
 
+        val now = android.os.SystemClock.uptimeMillis()
+
         // Phone Roll — 延后 50ms，等 T:102 被固件主循环处理
         // p 存的是相对 baseline 的 offset，recall 时还原为绝对角度
+        // 必须挂 ESTOP_TOKEN，否则 emergencyStop() 取消不掉，stop 后还会继续发 T:700
         position.p?.let { rollOffset ->
             val baseline = SessionBaseline.rollDeg ?: return@let
             val absolute = baseline + rollOffset
-            handler.postDelayed({
+            handler.postAtTime({
                 if (!isStopped) sendRollAbsolute(absolute)
-            }, 50)
+            }, ESTOP_TOKEN, now + 50)
         }
 
-        // Phone Tilt — 再延后 50ms，避免 T:700 和 T:703 嵌套
+        // Phone Tilt — 再延后 50ms，避免 T:700 和 T:703 嵌套；同样挂 ESTOP_TOKEN
         position.tilt?.let { tilt ->
-            handler.postDelayed({
+            handler.postAtTime({
                 if (!isStopped) send("""{"T":703,"angle":$tilt}""")
-            }, 100)
+            }, ESTOP_TOKEN, now + 100)
         }
     }
 
@@ -164,6 +167,14 @@ class ArmController(var connection: ConnectionManager) {
                 null
             }
         }
+    }
+
+    // 可被 emergencyStop 取消的延迟任务
+    // 其他 Controller 应优先使用此方法，而不是自己的 handler.postDelayed
+    fun scheduleCancellable(delayMs: Long, action: () -> Unit) {
+        handler.postAtTime({
+            if (!isStopped) action()
+        }, ESTOP_TOKEN, android.os.SystemClock.uptimeMillis() + delayMs)
     }
 
     private fun send(json: String) {

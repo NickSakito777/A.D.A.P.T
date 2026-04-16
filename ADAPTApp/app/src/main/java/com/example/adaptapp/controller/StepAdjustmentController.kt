@@ -56,9 +56,9 @@ class StepAdjustmentController(private val armController: ArmController) {
         armController.moveTo(target, speed = 200, acc = 10)
         feedback.tilt?.let { currentTilt ->
             val tiltTarget = clampTiltSafe(currentTilt + TILT_COMPENSATION_UP_DEG)
-            handler.postDelayed({
-                if (!armController.isStopped) armController.sendTiltAbsolute(tiltTarget)
-            }, TILT_COMPENSATION_DELAY_MS)
+            armController.scheduleCancellable(TILT_COMPENSATION_DELAY_MS) {
+                armController.sendTiltAbsolute(tiltTarget)
+            }
         }
         return AdjustResult.Success
     }
@@ -70,9 +70,9 @@ class StepAdjustmentController(private val armController: ArmController) {
         armController.moveTo(target, speed = 200, acc = 10)
         feedback.tilt?.let { currentTilt ->
             val tiltTarget = clampTiltSafe(currentTilt - TILT_COMPENSATION_DOWN_DEG)
-            handler.postDelayed({
-                if (!armController.isStopped) armController.sendTiltAbsolute(tiltTarget)
-            }, TILT_COMPENSATION_DELAY_MS)
+            armController.scheduleCancellable(TILT_COMPENSATION_DELAY_MS) {
+                armController.sendTiltAbsolute(tiltTarget)
+            }
         }
         return AdjustResult.Success
     }
