@@ -10,8 +10,10 @@ class StepAdjustmentController(private val armController: ArmController) {
 
     companion object {
         private const val TAG = "StepAdjust"
-        const val STEP_Z_MM = 10.0
-        const val BASE_STEP_RAD = 0.052  // ~3°
+        const val BASE_STEP_RAD = 0.052      // ~3°，adjust left/right
+        const val SHOULDER_STEP_RAD = 0.035  // ~2°，adjust up/down（关节空间，避免 IK 跳变）
+        // 若实测 adjust up 时手机下移，把 SHOULDER_UP_SIGN 翻转
+        const val SHOULDER_UP_SIGN = -1.0
         const val TILT_STEP_DEG = 5.0
         // tilt 方向：在 0°-106° 安全区内，减小角度 = 手机仰角上调
         // 如果实测方向反了，翻转这个符号即可
@@ -46,30 +48,33 @@ class StepAdjustmentController(private val armController: ArmController) {
         armController.moveTo(target, speed = 200, acc = 10)
         return AdjustResult.Success
     }
+    // 关节空间抬升：shoulder 旋转 + base 显式锁定，避免固件 IK 在某些角度跳变导致 base 180° 翻转
     fun adjustUp(feedback: ArmPosition): AdjustResult {
-        val result = adjustCartesian(feedback, dz = STEP_Z_MM)
-        if (result is AdjustResult.Success) {
-            feedback.tilt?.let { currentTilt ->
-                val target = clampTiltSafe(currentTilt + TILT_COMPENSATION_UP_DEG)
-                handler.postDelayed({
-                    if (!armController.isStopped) armController.sendTiltAbsolute(target)
-                }, TILT_COMPENSATION_DELAY_MS)
-            }
+        val newShoulder = feedback.s + SHOULDER_UP_SIGN * SHOULDER_STEP_RAD
+        val target = ArmPosition(name = "", b = feedback.b, s = newShoulder, e = feedback.e, t = feedback.t)
+        Log.i(TAG, "adjustUp: shoulder ${feedback.s} -> $newShoulder, base locked=${feedback.b}")
+        armController.moveTo(target, speed = 200, acc = 10)
+        feedback.tilt?.let { currentTilt ->
+            val tiltTarget = clampTiltSafe(currentTilt + TILT_COMPENSATION_UP_DEG)
+            handler.postDelayed({
+                if (!armController.isStopped) armController.sendTiltAbsolute(tiltTarget)
+            }, TILT_COMPENSATION_DELAY_MS)
         }
-        return result
+        return AdjustResult.Success
     }
 
     fun adjustDown(feedback: ArmPosition): AdjustResult {
-        val result = adjustCartesian(feedback, dz = -STEP_Z_MM)
-        if (result is AdjustResult.Success) {
-            feedback.tilt?.let { currentTilt ->
-                val target = clampTiltSafe(currentTilt - TILT_COMPENSATION_DOWN_DEG)
-                handler.postDelayed({
-                    if (!armController.isStopped) armController.sendTiltAbsolute(target)
-                }, TILT_COMPENSATION_DELAY_MS)
-            }
+        val newShoulder = feedback.s - SHOULDER_UP_SIGN * SHOULDER_STEP_RAD
+        val target = ArmPosition(name = "", b = feedback.b, s = newShoulder, e = feedback.e, t = feedback.t)
+        Log.i(TAG, "adjustDown: shoulder ${feedback.s} -> $newShoulder, base locked=${feedback.b}")
+        armController.moveTo(target, speed = 200, acc = 10)
+        feedback.tilt?.let { currentTilt ->
+            val tiltTarget = clampTiltSafe(currentTilt - TILT_COMPENSATION_DOWN_DEG)
+            handler.postDelayed({
+                if (!armController.isStopped) armController.sendTiltAbsolute(tiltTarget)
+            }, TILT_COMPENSATION_DELAY_MS)
         }
-        return result
+        return AdjustResult.Success
     }
 
     fun tiltUp(feedback: ArmPosition): AdjustResult {
