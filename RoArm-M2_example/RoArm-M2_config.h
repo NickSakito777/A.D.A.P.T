@@ -92,8 +92,8 @@ bool runNewJsonCmd = false;
 #define ARM_L1_LENGTH_MM    126.06
 #define ARM_L2_LENGTH_MM_A  236.82
 #define ARM_L2_LENGTH_MM_B	30.00 
-#define ARM_L3_LENGTH_MM_A_0	280.15
-#define ARM_L3_LENGTH_MM_B_0	1.73
+#define ARM_L3_LENGTH_MM_A_0	152.16
+#define ARM_L3_LENGTH_MM_B_0	0
 
 // 	  TYPE:0
 //    -------L3A-----------O==L2B===

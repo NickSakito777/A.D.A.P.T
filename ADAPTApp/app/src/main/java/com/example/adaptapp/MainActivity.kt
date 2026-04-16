@@ -41,6 +41,7 @@ import com.example.adaptapp.ui.screen.HomeScreen
 import com.example.adaptapp.ui.screen.PositionsScreen
 import com.example.adaptapp.ui.screen.SetupScreen
 import com.example.adaptapp.ui.component.BluetoothDeviceDialog
+import com.example.adaptapp.ui.component.ControlModeDialog
 import com.example.adaptapp.ui.theme.ADAPTAppTheme
 import com.example.adaptapp.ui.theme.AdaptGrayDark
 import com.example.adaptapp.ui.theme.AdaptTextPrimary
@@ -156,6 +157,7 @@ class MainActivity : ComponentActivity() {
                         kotlinx.coroutines.delay(500)
                         armController.readFeedback()
                     } else if (connectionState == ConnectionState.DISCONNECTED) {
+                        voiceCommandHandler.pause()
                         voiceCommandHandler.invalidateFeedback()
                         autoLevelController.reset()
                     }
@@ -179,11 +181,14 @@ class MainActivity : ComponentActivity() {
                 }
 
                 val voiceState by voiceCommandHandler.voiceState.collectAsState()
+                val showControlPopup by voiceCommandHandler.showControlPopup.collectAsState()
                 var voiceEnabled by remember { mutableStateOf(true) }
                 var resumeInFlight by remember { mutableStateOf(false) }
                 var pendingVoiceResumeAfterStop by remember { mutableStateOf(false) }
-                LaunchedEffect(currentScreen, voiceEnabled) {
-                    if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS) && voiceAvailable && voiceEnabled) {
+                LaunchedEffect(currentScreen, voiceEnabled, connectionState) {
+                    if ((currentScreen == Screen.HOME || currentScreen == Screen.POSITIONS)
+                        && voiceAvailable && voiceEnabled
+                        && connectionState == ConnectionState.CONNECTED) {
                         voiceCommandHandler.resume()
                     } else {
                         voiceCommandHandler.pause()
@@ -339,6 +344,16 @@ class MainActivity : ComponentActivity() {
                             btManager.connectToDevice(address)
                         },
                         onDismiss = { showBtPicker = false }
+                    )
+                }
+
+                if (showControlPopup) {
+                    ControlModeDialog(
+                        onDismiss = { voiceCommandHandler.closeControlPopup() },
+                        onUp = { voiceCommandHandler.triggerAdjustUp() },
+                        onDown = { voiceCommandHandler.triggerAdjustDown() },
+                        onLeft = { voiceCommandHandler.triggerAdjustLeft() },
+                        onRight = { voiceCommandHandler.triggerAdjustRight() }
                     )
                 }
             }

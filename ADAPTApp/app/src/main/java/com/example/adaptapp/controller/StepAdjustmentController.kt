@@ -19,7 +19,8 @@ class StepAdjustmentController(private val armController: ArmController) {
         // tilt 危险区边界
         const val TILT_DANGER_MIN = 106.0
         const val TILT_DANGER_MAX = 284.0
-        const val TILT_COMPENSATION_DEG = 5.0
+        const val TILT_COMPENSATION_UP_DEG = 1.5    // adjust up 时镜头补偿量（向下转）
+        const val TILT_COMPENSATION_DOWN_DEG = 2.5  // adjust down 时镜头补偿量（向上转）
         const val TILT_COMPENSATION_DELAY_MS = 1500L
     }
 
@@ -49,7 +50,7 @@ class StepAdjustmentController(private val armController: ArmController) {
         val result = adjustCartesian(feedback, dz = STEP_Z_MM)
         if (result is AdjustResult.Success) {
             feedback.tilt?.let { currentTilt ->
-                val target = clampTiltSafe(currentTilt + TILT_COMPENSATION_DEG)
+                val target = clampTiltSafe(currentTilt + TILT_COMPENSATION_UP_DEG)
                 handler.postDelayed({
                     if (!armController.isStopped) armController.sendTiltAbsolute(target)
                 }, TILT_COMPENSATION_DELAY_MS)
@@ -62,7 +63,7 @@ class StepAdjustmentController(private val armController: ArmController) {
         val result = adjustCartesian(feedback, dz = -STEP_Z_MM)
         if (result is AdjustResult.Success) {
             feedback.tilt?.let { currentTilt ->
-                val target = clampTiltSafe(currentTilt - TILT_COMPENSATION_DEG)
+                val target = clampTiltSafe(currentTilt - TILT_COMPENSATION_DOWN_DEG)
                 handler.postDelayed({
                     if (!armController.isStopped) armController.sendTiltAbsolute(target)
                 }, TILT_COMPENSATION_DELAY_MS)

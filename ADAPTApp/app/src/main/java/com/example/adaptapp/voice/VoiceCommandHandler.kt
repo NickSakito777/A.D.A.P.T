@@ -61,6 +61,10 @@ class VoiceCommandHandler(
     private val _voiceState = MutableStateFlow(VoiceState(VoiceStatus.PAUSED))
     val voiceState: StateFlow<VoiceState> = _voiceState.asStateFlow()
 
+    // Control Mode 弹窗状态 — UI 观察
+    private val _showControlPopup = MutableStateFlow(false)
+    val showControlPopup: StateFlow<Boolean> = _showControlPopup.asStateFlow()
+
     // 唤醒词引擎控制回调 — 由 MainActivity 设置
     // Wake word engine control — set by integration layer
     var onWakeWordStart: (() -> Unit)? = null
@@ -121,6 +125,7 @@ class VoiceCommandHandler(
         if (_voiceState.value.status != VoiceStatus.EXECUTING) return@Runnable
         armController.readFeedback()
         setState(VoiceStatus.IDLE, "Say 'Hey Jarvis'")
+        // 弹窗不在这里关；只由 ✕ 按钮 / "back" 语音 / cancel / emergency stop 关闭
     }
     // 必须是 named Runnable，匿名 lambda 无法被 removeCallbacks 取消
     private val srFailureRestartRunnable = Runnable { onWakeWordStart?.invoke() }
@@ -242,6 +247,7 @@ class VoiceCommandHandler(
             onWakeWordStop?.invoke()
             pendingAction = null
             pendingCandidates = null
+            _showControlPopup.value = false
             invalidateFeedback()
             setState(VoiceStatus.PAUSED)
         }
@@ -253,6 +259,50 @@ class VoiceCommandHandler(
             speechRecognizer?.destroy()
             speechRecognizer = null
         }
+    }
+
+    // === Control Mode 弹窗 ===
+
+    // 打开弹窗 — 由 "control mode" 语音指令触发
+    private fun openControlPopup() {
+        Log.i(TAG, "openControlPopup(): showing control panel")
+        _showControlPopup.value = true
+        srFailureCount = 0
+        returnToIdle()
+        feedback.speak("Control mode")
+    }
+
+    // 关闭弹窗 — UI 上点 X 按钮或点击外部背景
+    fun closeControlPopup() {
+        handler.post {
+            Log.i(TAG, "closeControlPopup()")
+            _showControlPopup.value = false
+        }
+    }
+
+    // 弹窗按钮触发 — 等同于语音 adjust up/down/left/right
+    fun triggerAdjustUp() = handler.post {
+        if (_voiceState.value.status == VoiceStatus.EXECUTING) return@post
+        if (!checkConnection()) return@post
+        executeAdjustment("Adjusting up") { fb -> stepController.adjustUp(fb) }
+    }
+
+    fun triggerAdjustDown() = handler.post {
+        if (_voiceState.value.status == VoiceStatus.EXECUTING) return@post
+        if (!checkConnection()) return@post
+        executeAdjustment("Adjusting down") { fb -> stepController.adjustDown(fb) }
+    }
+
+    fun triggerAdjustLeft() = handler.post {
+        if (_voiceState.value.status == VoiceStatus.EXECUTING) return@post
+        if (!checkConnection()) return@post
+        executeAdjustment("Adjusting left") { fb -> stepController.adjustLeft(fb) }
+    }
+
+    fun triggerAdjustRight() = handler.post {
+        if (_voiceState.value.status == VoiceStatus.EXECUTING) return@post
+        if (!checkConnection()) return@post
+        executeAdjustment("Adjusting right") { fb -> stepController.adjustRight(fb) }
     }
 
     // === 状态转换 ===
@@ -290,6 +340,36 @@ class VoiceCommandHandler(
 
         if (!checkConnection()) return
 
+        // Control Mode 弹窗打开时：允许裸 "up/down/left/right" 触发 adjust，"back" 关闭弹窗
+        if (_showControlPopup.value) {
+            val trimmed = text.lowercase().trim()
+            when {
+                trimmed == "back" || trimmed == "go back" || trimmed == "close" || trimmed == "exit" -> {
+                    _showControlPopup.value = false
+                    srFailureCount = 0
+                    returnToIdle()
+                    feedback.speak("Closed")
+                    return
+                }
+                trimmed == "up" || trimmed == "go up" || trimmed == "move up" -> {
+                    executeAdjustment("Adjusting up") { fb -> stepController.adjustUp(fb) }
+                    return
+                }
+                trimmed == "down" || trimmed == "go down" || trimmed == "move down" -> {
+                    executeAdjustment("Adjusting down") { fb -> stepController.adjustDown(fb) }
+                    return
+                }
+                trimmed == "left" || trimmed == "go left" || trimmed == "move left" -> {
+                    executeAdjustment("Adjusting left") { fb -> stepController.adjustLeft(fb) }
+                    return
+                }
+                trimmed == "right" || trimmed == "go right" || trimmed == "move right" -> {
+                    executeAdjustment("Adjusting right") { fb -> stepController.adjustRight(fb) }
+                    return
+                }
+            }
+        }
+
         val positions = positionRepository.getAll()
         val names = positions.map { it.name }
         Log.i(TAG, "Saved positions: $names")
@@ -308,6 +388,7 @@ class VoiceCommandHandler(
             is CommandMatcher.MatchResult.AdjustDown -> executeAdjustment("Adjusting down") { fb -> stepController.adjustDown(fb) }
             is CommandMatcher.MatchResult.TiltUp -> executeAdjustment("Tilting up") { fb -> stepController.tiltUp(fb) }
             is CommandMatcher.MatchResult.TiltDown -> executeAdjustment("Tilting down") { fb -> stepController.tiltDown(fb) }
+            is CommandMatcher.MatchResult.ControlMode -> openControlPopup()
             is CommandMatcher.MatchResult.FoldArm -> {
                 requestConfirmation(PendingAction.Fold, "Fold the arm, confirm?")
             }
@@ -504,6 +585,7 @@ class VoiceCommandHandler(
         pendingCandidates = null
         pendingAdjustAction = null
         srFailureCount = 0
+        _showControlPopup.value = false
         invalidateFeedback()
         // stop 后不回 IDLE — 进入 PAUSED 并停掉 wake word，语音系统完全沉默
         onWakeWordStop?.invoke()
@@ -518,6 +600,7 @@ class VoiceCommandHandler(
         pendingAction = null
         pendingCandidates = null
         srFailureCount = 0
+        _showControlPopup.value = false
         returnToIdle()
         feedback.speak("Cancelled")
     }

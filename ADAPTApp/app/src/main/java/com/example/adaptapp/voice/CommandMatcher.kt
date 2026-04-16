@@ -23,6 +23,7 @@ class CommandMatcher {
         data object AdjustDown : MatchResult()
         data object TiltUp : MatchResult()
         data object TiltDown : MatchResult()
+        data object ControlMode : MatchResult()
         data class PositionMatch(val name: String) : MatchResult()
         data class Ambiguous(val candidates: List<String>) : MatchResult()
         data object NoMatch : MatchResult()
@@ -41,6 +42,11 @@ class CommandMatcher {
         // 2. 取消
         if (lower.contains("cancel") || lower.contains("never mind")) {
             return MatchResult.Cancel
+        }
+
+        // 3. Control Mode 弹窗 — "control mode" / ASR 常见误识 "controlled mode"
+        if (lower.contains("control mode") || lower.contains("controlled mode")) {
+            return MatchResult.ControlMode
         }
 
         // 3. 横屏 / 竖屏

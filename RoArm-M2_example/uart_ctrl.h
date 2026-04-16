@@ -170,6 +170,19 @@ void jsonCmdReceiveHandler(){
 												jsonCmdReceive["led"]
 												);break;
 	case CMD_SWITCH_OFF:  switchEmergencyStop();break;
+	case CMD_UPDATE_IK_PARAMS: {
+		l2A = jsonCmdReceive["l2A"] | l2A;
+		l2B = jsonCmdReceive["l2B"] | l2B;
+		l3A = jsonCmdReceive["l3A"] | l3A;
+		l3B = jsonCmdReceive["l3B"] | l3B;
+		recalcIkDerivedParams();
+		String msg = "{\"T\":1161,\"l2\":" + String(l2,2)
+		           + ",\"t2rad\":" + String(t2rad,4)
+		           + ",\"l3\":" + String(l3,2)
+		           + ",\"t3rad\":" + String(t3rad,4) + "}";
+		serialPrintAll(msg);
+		break;
+	}
 		case CMD_SINGLE_JOINT_ANGLE:
 												RoArmM2_abortMotion = false;
 												++motionGeneration;

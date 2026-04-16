@@ -70,7 +70,7 @@ class WakeWordService(private val context: Context) {
     private val embedBuffer = ArrayDeque<FloatArray>()
     private var lastDetectionTime = 0L
 
-    // Vosk "stop" 检测器（替代 stop.onnx）
+    // Vosk "stop abort" 检测器（替代 stop.onnx）
     private var voskDetector: VoskStopDetector? = null
 
     private var _initialized = false
@@ -117,17 +117,17 @@ class WakeWordService(private val context: Context) {
                 return false
             }
 
-            // Vosk stop 检测器（异步解压模型，解压完成前 feedAudio 安全降级）
+            // Vosk "stop abort" 检测器（异步解压模型，解压完成前 feedAudio 安全降级）
             voskDetector = VoskStopDetector().also { detector ->
                 detector.onStopDetected = {
-                    Log.i(TAG, "Vosk stop callback -> onWakeWord(stop)")
-                    onWakeWord?.invoke("stop")
+                    Log.i(TAG, "Vosk emergency callback -> onWakeWord(stop abort)")
+                    onWakeWord?.invoke("stop abort")
                 }
                 detector.initialize(context)
             }
 
             _initialized = true
-            Log.i(TAG, "Initialized: ${wwSessions.keys} + Vosk stop (async)")
+            Log.i(TAG, "Initialized: ${wwSessions.keys} + Vosk stop abort (async)")
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Init failed: ${e.message}")
@@ -165,7 +165,7 @@ class WakeWordService(private val context: Context) {
     }
 
     fun suppressStopFor(durationMs: Long) {
-        Log.i(TAG, "Suppressing Vosk stop for ${durationMs}ms")
+        Log.i(TAG, "Suppressing Vosk stop abort for ${durationMs}ms")
         voskDetector?.suppressFor(durationMs)
     }
 
@@ -216,7 +216,7 @@ class WakeWordService(private val context: Context) {
             val read = audioRecord?.read(buffer, 0, FRAME_SIZE) ?: break
             if (read != FRAME_SIZE) continue
 
-            // Vosk stop 检测（直接喂 short[]，异步初始化完成前自动跳过）
+            // Vosk "stop abort" 检测（直接喂 short[]，异步初始化完成前自动跳过）
             voskDetector?.feedAudio(buffer, read)
 
             // PCM16 → float (keep int16 range, mel model expects it)

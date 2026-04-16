@@ -151,6 +151,10 @@
 // {"T":115}
 #define CMD_SWITCH_OFF 115
 
+// runtime IK parameter update.
+// {"T":116,"l1":126.06,"l2A":236.82,"l2B":30.0,"l3A":280.15,"l3B":1.73}
+#define CMD_UPDATE_IK_PARAMS 116
+
 // ctrl a single joint abs angle in deg.
 // joint: 1-BASE_JOINT + ->left
 //        2-SHOULDER_JOINT + ->down
