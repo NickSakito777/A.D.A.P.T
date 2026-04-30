@@ -37,7 +37,8 @@ fun SetupScreen(
     controller: ArmController,
     autoLevelController: AutoLevelController,
     repository: PositionRepository,
-    onExit: () -> Unit
+    onExit: () -> Unit,
+    onEmergencyStop: () -> Unit
 ) {
     var step by remember { mutableStateOf(SetupStep.CONFIRM) }
     var positionName by remember { mutableStateOf("") }
@@ -259,6 +260,29 @@ fun SetupScreen(
 
                         Spacer(modifier = Modifier.height(32.dp))
 
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    controller.setTorque(false)
+                                    controller.setRollTorque(false)
+                                    Toast.makeText(context, "Torque released", Toast.LENGTH_SHORT).show()
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                "TORQUE OFF",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = AdaptTextPrimary
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
                         Button(
                             onClick = {
                                 scope.launch {
@@ -280,7 +304,7 @@ fun SetupScreen(
                             )
                         ) {
                             Text(
-                                if (armMoved) "LOCK ARM HERE" else "Move arm to enable",
+                                "Confirm",
                                 fontSize = 20.sp,
                                 color = if (armMoved) AdaptWhite else Color(0xFF757575),
                                 fontWeight = FontWeight.Bold
@@ -490,7 +514,7 @@ fun SetupScreen(
 
         // Emergency stop — 触发后直接退出页面，避免 coroutine / UI 状态悬挂
         EmergencyStopButton(onStop = {
-            controller.emergencyStop()
+            onEmergencyStop()
             onExit()
         })
     }
