@@ -48,7 +48,8 @@ fun PositionsScreen(
     onVoiceToggle: ((Boolean) -> Unit)?,
     onEnterSetup: () -> Unit,
     onOpenDebug: () -> Unit,
-    onOpenDrawer: () -> Unit
+    onOpenDrawer: () -> Unit,
+    onEmergencyStop: () -> Unit
 ) {
     val connectionState by connection.connectionState.collectAsState()
     val isConnected = connectionState == ConnectionState.CONNECTED
@@ -233,7 +234,7 @@ fun PositionsScreen(
 
         // 7. Emergency Stop
         EmergencyStopButton(
-            onStop = { controller.emergencyStop() },
+            onStop = onEmergencyStop,
             modifier = Modifier.padding(bottom = 16.dp)
         )
     }

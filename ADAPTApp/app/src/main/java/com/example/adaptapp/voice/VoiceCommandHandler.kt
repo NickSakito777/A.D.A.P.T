@@ -575,6 +575,8 @@ class VoiceCommandHandler(
 
     // === 事件处理 ===
 
+    fun requestEmergencyStop() = handleEmergencyStop()
+
     private fun handleEmergencyStop() {
         Log.i(TAG, "handleEmergencyStop(): entering emergency stop flow")
         cancelAllTimers()

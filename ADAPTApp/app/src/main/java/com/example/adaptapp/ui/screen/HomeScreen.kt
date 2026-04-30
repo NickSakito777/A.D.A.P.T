@@ -52,6 +52,7 @@ fun HomeScreen(
     onVoiceToggle: ((Boolean) -> Unit)?,
     onEnterSetup: () -> Unit,
     onOpenDrawer: () -> Unit,
+    onEmergencyStop: () -> Unit,
     alignmentStatus: AlignmentStatus = AlignmentStatus.NOT_ALIGNED,
     onAlignTap: () -> Unit = {}
 ) {
@@ -276,7 +277,7 @@ fun HomeScreen(
 
         // 7. Emergency Stop
         EmergencyStopButton(
-            onStop = { controller.emergencyStop() },
+            onStop = onEmergencyStop,
             modifier = Modifier.padding(bottom = 16.dp)
         )
     }

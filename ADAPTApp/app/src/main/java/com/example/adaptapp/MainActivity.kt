@@ -183,6 +183,9 @@ class MainActivity : ComponentActivity() {
                 val voiceState by voiceCommandHandler.voiceState.collectAsState()
                 val showControlPopup by voiceCommandHandler.showControlPopup.collectAsState()
                 var voiceEnabled by remember { mutableStateOf(true) }
+                // 单一 E-stop 入口 — 所有 UI 按钮都经 VoiceCommandHandler 做完整清理
+                // (timers / pendingAction / SR / TTS / wake word)，再发 T:0
+                val onEmergencyStop: () -> Unit = { voiceCommandHandler.requestEmergencyStop() }
                 var resumeInFlight by remember { mutableStateOf(false) }
                 var pendingVoiceResumeAfterStop by remember { mutableStateOf(false) }
                 LaunchedEffect(currentScreen, voiceEnabled, connectionState) {
@@ -236,7 +239,7 @@ class MainActivity : ComponentActivity() {
                                     scope.launch { drawerState.close() }
                                 },
                                 onClose = { scope.launch { drawerState.close() } },
-                                onEmergencyStop = { armController.emergencyStop() }
+                                onEmergencyStop = onEmergencyStop
                             )
                         }
                     ) {
@@ -253,6 +256,7 @@ class MainActivity : ComponentActivity() {
                                 onVoiceToggle = { voiceEnabled = it },
                                 onEnterSetup = { currentScreen = Screen.SETUP },
                                 onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onEmergencyStop = onEmergencyStop,
                                 alignmentStatus = alignmentStatus,
                                 onAlignTap = { autoLevelController.start() }
                             )
@@ -268,14 +272,16 @@ class MainActivity : ComponentActivity() {
                                 onVoiceToggle = { voiceEnabled = it },
                                 onEnterSetup = { currentScreen = Screen.SETUP },
                                 onOpenDebug = { currentScreen = Screen.DEBUG },
-                                onOpenDrawer = { scope.launch { drawerState.open() } }
+                                onOpenDrawer = { scope.launch { drawerState.open() } },
+                                onEmergencyStop = onEmergencyStop
                             )
                             Screen.SETUP -> SetupScreen(
                                 connection = activeConnection,
                                 controller = armController,
                                 autoLevelController = autoLevelController,
                                 repository = positionRepository,
-                                onExit = { currentScreen = Screen.POSITIONS }
+                                onExit = { currentScreen = Screen.POSITIONS },
+                                onEmergencyStop = onEmergencyStop
                             )
                             Screen.DEBUG -> DebugScreen(
                                 connection = activeConnection,
