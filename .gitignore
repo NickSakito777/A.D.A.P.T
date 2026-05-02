@@ -1,2 +1,6 @@
 RoArm-M2_example/*.txt
 RoArm-M2_example/*.md
+__pycache__/
+*.pyc
+.DS_Store
+power_log_*.csv
