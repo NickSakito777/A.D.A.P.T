@@ -155,7 +155,6 @@ roarm_position_tool_4.py          Python 位置调试工具
 - **Dr Tom Carlson**（项目导师）— UCL Aspire CREATe
 - **Ms Ivy Mumuni** — 参与者招募与硬件指导
 - **Ms Alison Barnes** — 临床反馈与终端用户招募
-- **Ms Jinxuan Liu** — PPIE 协调
 - **The Institute of Making** — 3D 打印与原型支持
 - 所有 PPIE 参与者与案例研究志愿者，他们的反馈塑造了本项目的每一次迭代
 

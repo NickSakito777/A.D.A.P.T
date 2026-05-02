@@ -155,7 +155,6 @@ roarm_position_tool_4.py          Python position-tuning utility
 - **Dr Tom Carlson** (project supervisor) — UCL Aspire CREATe
 - **Ms Ivy Mumuni** — guidance on participant recruitment and hardware development
 - **Ms Alison Barnes** — clinical feedback and end-user recruitment
-- **Ms Jinxuan Liu** — PPIE coordination
 - **The Institute of Making** — 3D-printing and prototyping support
 - All PPIE participants and case-study volunteers, whose feedback shaped every design iteration
 
